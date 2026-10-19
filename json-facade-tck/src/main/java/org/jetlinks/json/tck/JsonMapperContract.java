@@ -1,0 +1,523 @@
+package org.jetlinks.json.tck;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.StringReader;
+import java.io.StringWriter;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.jetlinks.json.JsonException;
+import org.jetlinks.json.JsonMapper;
+import org.jetlinks.json.JsonOptions;
+import org.jetlinks.json.JsonPointer;
+import org.jetlinks.json.JsonReadOptions;
+import org.jetlinks.json.JsonReadSession;
+import org.jetlinks.json.JsonReader;
+import org.jetlinks.json.JsonToken;
+import org.jetlinks.json.JsonType;
+import org.jetlinks.json.JsonValue;
+import org.jetlinks.json.JsonWriter;
+import org.jetlinks.json.spi.JsonAdapter;
+import org.jetlinks.json.spi.JsonModule;
+import org.jetlinks.json.spi.JsonModuleContext;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/** Reusable black-box contract; implementations run these tests against their actual engine.
+ * Uses no engine mocks. Test payloads are deliberately bounded.
+ * @since 1.0.0
+ */
+public abstract class JsonMapperContract {
+    private static final JsonType<List<Map<String, BigDecimal>>> DECIMAL_ROWS = new JsonType<>() { };
+
+    protected abstract JsonMapper mapper(JsonOptions options, JsonModule... modules);
+
+    protected final JsonMapper mapper() {
+        return mapper(JsonOptions.DEFAULT);
+    }
+
+    @Test
+    void bindsNestedGenericTypesAndPreservesPrecision() {
+        JsonMapper json = mapper();
+        List<Map<String, BigDecimal>> values = json.read("[{\"n\":1.0000000000000000001}]",
+                DECIMAL_ROWS);
+        assertEquals(new BigDecimal("1.0000000000000000001"), values.get(0).get("n"));
+        Map<?, ?> loose = json.read("{\"n\":1.0000000000000000001,\"i\":1234567890123456789012345}", Map.class);
+        assertInstanceOf(BigDecimal.class, loose.get("n"));
+        assertInstanceOf(BigInteger.class, loose.get("i"));
+        assertEquals(List.of(1, 2), json.read("[1,2]", JsonType.listOf(JsonType.of(Integer.class))));
+        assertEquals(Map.of("x", 3), json.read("{\"x\":3}", JsonType.mapOf(JsonType.of(String.class), JsonType.of(Integer.class))));
+        assertEquals(7, json.convert(Map.of("value", 7), JsonType.of(Item.class)).value);
+        assertEquals(4, json.read("{\"value\":4}".getBytes(StandardCharsets.UTF_8), Item.class).value);
+    }
+
+    @Test
+    void nullsTrailingContentAndUnknownFieldsHaveExplicitSemantics() {
+        JsonMapper json = mapper();
+        assertNull(json.read("null", Object.class));
+        assertSame(JsonValue.NULL, json.read("null", JsonValue.class));
+        assertThrows(JsonException.class, () -> json.read("", Object.class));
+        assertThrows(JsonException.class, () -> json.read("{} []", Object.class));
+        assertEquals(2, json.read("{\"value\":2,\"other\":1}", Item.class).value);
+        JsonOptions strict = new JsonOptions(true, true, true, false, false, 256, 10000, 1000, 10000);
+        JsonMapper strictMapper = mapper(strict);
+        assertThrows(JsonException.class, () -> strictMapper.read("{\"value\":2,\"other\":1}", Item.class));
+        assertThrows(JsonException.class, () -> strictMapper.read("{\"x\":1,\"x\":2}", Object.class));
+        assertEquals(2, json.read("{\"x\":1,\"x\":2}", Map.class).get("x"));
+    }
+
+    @Test
+    void explicitOptionsControlNumbersNullsAndPrettyPrinting() {
+        JsonOptions options = new JsonOptions(false, false, false, true, true, 256, 10000, 1000, 10000);
+        JsonMapper json = mapper(options);
+        assertSame(options, json.options());
+        assertInstanceOf(Double.class, json.read("1.25", Object.class));
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("present", 1);
+        values.put("absent", null);
+        String output = json.write(values);
+        assertFalse(output.contains("absent"));
+        assertTrue(output.contains("\n"));
+        assertEquals("[null]", mapper().write(java.util.Collections.singletonList(null)));
+    }
+
+    @Test
+    void stringBytesAndCallerOwnedStreamsAreEquivalent() throws IOException {
+        JsonMapper json = mapper();
+        String input = "{\"value\":9}";
+        TrackedInput source = new TrackedInput(input.getBytes(StandardCharsets.UTF_8));
+        assertEquals(9, json.read(source, JsonType.of(Item.class)).value);
+        assertFalse(source.closed);
+        TrackedOutput target = new TrackedOutput();
+        json.write(new Item(9), target);
+        assertFalse(target.closed);
+        assertEquals(json.write(new Item(9)), target.toString(StandardCharsets.UTF_8));
+        StringReader reader = new StringReader(input);
+        assertEquals(9, json.read(reader, JsonType.of(Item.class)).value);
+        StringWriter writer = new StringWriter();
+        json.write(new Item(9), writer);
+        assertEquals(input, writer.toString());
+        assertArrayEquals(input.getBytes(StandardCharsets.UTF_8), json.writeBytes(new Item(9)));
+        try (BrokenOutput broken = new BrokenOutput(); BrokenInput brokenSource = new BrokenInput()) {
+            assertEquals(JsonException.Kind.IO,
+                    assertThrows(JsonException.class, () -> json.write(new Item(1), broken)).kind());
+            assertEquals(JsonException.Kind.IO,
+                    assertThrows(JsonException.class, () -> json.read(brokenSource, JsonType.of(Item.class))).kind());
+        }
+    }
+
+    @Test
+    void neutralTreeRoundTripsWithoutEngineTypes() {
+        JsonMapper json = mapper();
+        JsonValue tree = JsonValue.object().put("n", null).put("rows", JsonValue.array().add(1).add("中"));
+        assertSame(JsonValue.NULL, tree.get("n"));
+        assertSame(JsonValue.MISSING, tree.get("absent"));
+        assertEquals("中", tree.at(JsonPointer.of("/rows/1")).toJavaValue());
+        assertEquals(tree.toJavaValue(), json.readTree(json.write(tree)).toJavaValue());
+        assertEquals(Map.of("value", 8), json.toTree(new Item(8)).toJavaValue());
+        assertEquals(3, json.convert(JsonValue.object().put("value", 3), JsonType.of(Item.class)).value);
+        assertEquals(Map.of("tree", Map.of("n", 1)),
+                json.read(json.write(Map.of("tree", JsonValue.object().put("n", 1))), Map.class));
+    }
+
+    @Test
+    void cursorBindsCurrentValueAndSkipsUnrelatedContainers() {
+        JsonMapper json = mapper();
+        TrackedInput input = new TrackedInput("{\"ignored\":[1,{}],\"item\":{\"value\":5}}".getBytes(StandardCharsets.UTF_8));
+        try (JsonReader reader = json.reader(input)) {
+            assertNull(reader.current());
+            assertEquals(JsonToken.START_OBJECT, reader.next());
+            assertEquals(JsonToken.FIELD_NAME, reader.next());
+            assertEquals("ignored", reader.text());
+            assertEquals(JsonToken.START_ARRAY, reader.next());
+            reader.skipValue();
+            assertEquals(JsonToken.FIELD_NAME, reader.next());
+            assertEquals("item", reader.text());
+            assertEquals(JsonToken.START_OBJECT, reader.next());
+            assertEquals(5, reader.readValue(JsonType.of(Item.class)).value);
+            assertEquals(JsonToken.END_OBJECT, reader.next());
+            assertNull(reader.next());
+        }
+        assertFalse(input.closed);
+    }
+
+    @Test
+    void tokenWriterPreservesExplicitNullAndDoesNotRepairBrokenDocuments() {
+        TrackedOutput output = new TrackedOutput();
+        try (JsonWriter writer = mapper().writer(output)) {
+            writer.beginObject();
+            writer.name("rows");
+            writer.beginArray();
+            writer.value(null);
+            writer.value(new BigDecimal("1.25"));
+            writer.endArray();
+            writer.endObject();
+            writer.flush();
+        }
+        assertFalse(output.closed);
+        assertEquals("{\"rows\":[null,1.25]}", output.toString(StandardCharsets.UTF_8));
+        ByteArrayOutputStream broken = new ByteArrayOutputStream();
+        try (JsonWriter writer = mapper().writer(broken)) {
+            writer.beginArray();
+            writer.value(1);
+        }
+        assertEquals("[1", broken.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void neutralAdaptersWorkNestedAndRejectDuplicateRegistration() {
+        JsonModule module = new LabelsModule();
+        JsonMapper json = mapper(JsonOptions.DEFAULT, module);
+        assertEquals("\"label:a\"", json.write(new Label("a")));
+        assertEquals(new Label("b"), json.read("\"label:b\"", Label.class));
+        assertEquals(List.of(new Label("c")), json.read("[\"label:c\"]", JsonType.listOf(JsonType.of(Label.class))));
+        assertThrows(JsonException.class, () -> mapper(JsonOptions.DEFAULT, new DuplicateLabelsModule()));
+    }
+
+    @Test
+    void neutralAdaptersMatchExactClassesInsteadOfSilentlyApplyingToSubclasses() {
+        JsonMapper json = mapper(JsonOptions.DEFAULT, new ExactModule());
+        assertEquals("3", json.write(new BaseItem(3)));
+        assertEquals(4, json.read("4", BaseItem.class).value);
+        DetailedItem child = new DetailedItem();
+        child.value = 5;
+        child.extra = 6;
+        assertEquals(Map.of("value", 5, "extra", 6), json.read(json.write(child), Map.class));
+        DetailedItem restored = json.read(json.write(child), DetailedItem.class);
+        assertEquals(child.extra, restored.extra);
+        assertEquals("\"text\"", json.write("text"));
+        assertEquals("text", json.read("\"text\"", CharSequence.class).toString());
+    }
+
+    @Test
+    void allFramingsWorkAtEveryUtf8SplitAndRejectIncompleteInput() {
+        for (JsonReadOptions.Mode mode : JsonReadOptions.Mode.values()) {
+            String input = switch (mode) {
+                case SINGLE_VALUE -> "{\"value\":\"中\\\"文\"}";
+                case ARRAY_ELEMENTS -> "[{\"value\":\"中\\\"文\"},{\"value\":\"末\"}]";
+                case NDJSON -> "\r\n{\"value\":\"中\\\"文\"}\r\n{\"value\":\"末\"}";
+                case ROOT_VALUES -> "{\"value\":\"中\\\"文\"} {\"value\":\"末\"}";
+            };
+            byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
+            for (int split = 0; split <= bytes.length; split++) {
+                List<Map<String, Object>> values = read(mapper(), bytes, split,
+                        JsonType.mapOf(JsonType.of(String.class), JsonType.of(Object.class)), JsonReadOptions.of(mode));
+                assertEquals(mode == JsonReadOptions.Mode.SINGLE_VALUE ? 1 : 2, values.size(), mode + ":" + split);
+                assertEquals("中\"文", values.get(0).get("value"));
+            }
+        }
+        for (String input : List.of("[1", "{\"a\":", "\"unfinished", "1e", "[\"中")) {
+            assertThrows(JsonException.class, () -> read(mapper(), input, JsonReadOptions.Mode.SINGLE_VALUE));
+        }
+        byte[] invalidUtf8 = new byte[]{'"', (byte) 0xe4, (byte) 0xb8};
+        assertThrows(JsonException.class, () -> read(mapper(), invalidUtf8, 1,
+                JsonType.of(Object.class), JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE)));
+    }
+
+    @Test
+    void scalarsAndContainerRecordsRetainTheirBoundaries() {
+        assertEquals(List.of(1, 2, 3), read(mapper(), "1\n2\r\n3", JsonReadOptions.Mode.NDJSON));
+        assertEquals(List.of(true, false), read(mapper(), "true false", JsonReadOptions.Mode.ROOT_VALUES));
+        assertEquals(List.of(List.of(1, 2), List.of(3)), read(mapper(), "[[1,2],[3]]", JsonReadOptions.Mode.ARRAY_ELEMENTS));
+        assertEquals(List.of(), read(mapper(), "[]", JsonReadOptions.Mode.ARRAY_ELEMENTS));
+        assertEquals(List.of(), read(mapper(), "", JsonReadOptions.Mode.NDJSON));
+        assertEquals(List.of(), read(mapper(), "", JsonReadOptions.Mode.ROOT_VALUES));
+        assertEquals(java.util.Collections.singletonList(null), read(mapper(), "null", JsonReadOptions.Mode.SINGLE_VALUE));
+        assertEquals(List.of(new BigDecimal("1.250")), read(mapper(), "1.250", JsonReadOptions.Mode.SINGLE_VALUE));
+    }
+
+    @Test
+    void malformedFramesFailInsteadOfGuessingOrDroppingRecords() {
+        for (String input : List.of("", "{}", "1", "[1] [2]")) {
+            assertThrows(JsonException.class, () -> read(mapper(), input, JsonReadOptions.Mode.ARRAY_ELEMENTS));
+        }
+        for (String input : List.of("", "{} {}", "[] []")) {
+            assertThrows(JsonException.class, () -> read(mapper(), input, JsonReadOptions.Mode.SINGLE_VALUE));
+        }
+        for (String input : List.of("1 2\n", "{\n\"x\":1\n}\n", "{}{}", "1\r2", "{}\r")) {
+            assertThrows(JsonException.class, () -> read(mapper(), input, JsonReadOptions.Mode.NDJSON), input);
+        }
+        assertThrows(JsonException.class, () -> read(mapper(), "{}{}", JsonReadOptions.Mode.ROOT_VALUES));
+    }
+
+    @Test
+    void selectionSkipsSubtreesAndEmitsBeforeTheDocumentEnds() {
+        JsonReadOptions options = new JsonReadOptions(JsonReadOptions.Mode.SINGLE_VALUE,
+                new JsonReadOptions.Selection(JsonPointer.of("/data/rows"), true),
+                JsonReadOptions.NullPolicy.FAIL, 1000);
+        try (JsonReadSession<Integer> session = mapper().readSession(JsonType.of(Integer.class), options)) {
+            session.feed(ByteBuffer.wrap("{\"skip\":{\"x\":[1,2]},\"data\":{\"rows\":[7,".getBytes(StandardCharsets.UTF_8)));
+            assertEquals(7, session.read().value());
+            assertEquals(JsonReadSession.State.NEED_INPUT, session.read().state());
+            session.feed(ByteBuffer.wrap("8]},\"tail\":{}}".getBytes(StandardCharsets.UTF_8)));
+            assertEquals(8, session.read().value());
+            assertEquals(JsonReadSession.State.NEED_INPUT, session.read().state());
+            session.endInput();
+            assertEquals(JsonReadSession.State.END, session.read().state());
+        }
+        assertEquals(List.of(4, 5), read(mapper(), "{\"data\":{\"rows\":[4,5]}}".getBytes(StandardCharsets.UTF_8),
+                1, JsonType.of(Integer.class), options));
+        for (String input : List.of("{}", "{\"data\":{\"rows\":1}}",
+                "{\"data\":{\"rows\":[],\"rows\":[]}}")) {
+            assertThrows(JsonException.class, () -> read(mapper(), input.getBytes(StandardCharsets.UTF_8),
+                    1, JsonType.of(Object.class), options));
+        }
+        JsonReadOptions scalar = new JsonReadOptions(JsonReadOptions.Mode.SINGLE_VALUE,
+                new JsonReadOptions.Selection(JsonPointer.of("/x/0"), false), JsonReadOptions.NullPolicy.FAIL, 1000);
+        assertEquals(List.of(9), read(mapper(), "{\"x\":[9]}".getBytes(StandardCharsets.UTF_8), 1,
+                JsonType.of(Integer.class), scalar));
+    }
+
+    @Test
+    void byteBufferKindsAndLifecycleAreSupported() {
+        for (int kind = 0; kind < 4; kind++) {
+            ByteBuffer bytes = kind == 0 ? ByteBuffer.allocateDirect(20) : ByteBuffer.allocate(20);
+            bytes.put((byte) 'x').put("[1,2]".getBytes(StandardCharsets.UTF_8)).put((byte) 'y');
+            bytes.position(1).limit(6);
+            if (kind == 2) {
+                bytes = bytes.asReadOnlyBuffer();
+            } else if (kind == 3) {
+                bytes = bytes.slice();
+            }
+            bytes.mark();
+            int position = bytes.position();
+            int limit = bytes.limit();
+            JsonReadSession<Integer> session = mapper().readSession(JsonType.of(Integer.class),
+                    JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
+            try (session) {
+                session.feed(bytes);
+                assertThrows(IllegalStateException.class, () -> session.feed(ByteBuffer.allocate(0)));
+                assertEquals(1, session.read().value());
+                assertEquals(2, session.read().value());
+                assertEquals(JsonReadSession.State.NEED_INPUT, session.read().state());
+                session.feed(ByteBuffer.allocate(0));
+                session.endInput();
+                assertThrows(IllegalStateException.class, session::endInput);
+                assertEquals(JsonReadSession.State.END, session.read().state());
+                assertEquals(position, bytes.position());
+                assertEquals(limit, bytes.limit());
+                bytes.reset();
+            }
+            session.close();
+            assertFalse(session.needsInput());
+            assertThrows(IllegalStateException.class, session::read);
+        }
+    }
+
+    @Test
+    void parserAndRecordBudgetsAreEnforced() {
+        JsonOptions limits = new JsonOptions(true, false, true, false, false, 2, 10, 3, 30);
+        JsonMapper limited = mapper(limits);
+        assertThrows(JsonException.class, () -> limited.read("[[[1]]]", Object.class));
+        assertThrows(JsonException.class, () -> limited.read("12345", Object.class));
+        assertThrows(JsonException.class, () -> limited.read("\"01234567890123456789\"", Object.class));
+        JsonReadOptions tiny = new JsonReadOptions(JsonReadOptions.Mode.SINGLE_VALUE, null,
+                JsonReadOptions.NullPolicy.FAIL, 5);
+        JsonException error = assertThrows(JsonException.class, () -> read(mapper(),
+                "{\"x\":\"long\"}".getBytes(StandardCharsets.UTF_8), 1, JsonType.of(Object.class), tiny));
+        assertEquals(JsonException.Kind.LIMIT, error.kind());
+        assertThrows(JsonException.class, () -> read(limited, "{\"x\":1,\"x\":2}", JsonReadOptions.Mode.SINGLE_VALUE));
+    }
+
+    @Test
+    void recordBudgetCountsUtf8BytesWithoutRejectingValuesAtTheExactLimit() {
+        for (String input : List.of("1", "true", "\"中\"", "[1]", "{\"x\":1}")) {
+            byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
+            JsonReadOptions options = new JsonReadOptions(JsonReadOptions.Mode.SINGLE_VALUE, null,
+                    JsonReadOptions.NullPolicy.FAIL, bytes.length);
+            for (int split = 0; split <= bytes.length; split++) {
+                assertEquals(1, read(mapper(), bytes, split, JsonType.of(Object.class), options).size());
+            }
+        }
+    }
+
+    private static List<Object> read(JsonMapper mapper, String input, JsonReadOptions.Mode mode) {
+        byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
+        return read(mapper, bytes, Math.min(1, bytes.length), JsonType.of(Object.class), JsonReadOptions.of(mode));
+    }
+
+    private static <T> List<T> read(JsonMapper mapper, byte[] bytes, int split,
+                                   JsonType<T> type, JsonReadOptions options) {
+        List<T> result = new ArrayList<>();
+        try (JsonReadSession<T> session = mapper.readSession(type, options)) {
+            session.feed(ByteBuffer.wrap(bytes, 0, split));
+            drain(session, result);
+            session.feed(ByteBuffer.wrap(bytes, split, bytes.length - split));
+            drain(session, result);
+            session.endInput();
+            assertEquals(JsonReadSession.State.END, drain(session, result));
+        }
+        return result;
+    }
+
+    private static <T> JsonReadSession.State drain(JsonReadSession<T> session, List<T> values) {
+        while (true) {
+            JsonReadSession.Result<T> result = session.read();
+            if (result.state() != JsonReadSession.State.VALUE) {
+                return result.state();
+            }
+            values.add(result.value());
+        }
+    }
+
+    /** Public DTO exercises real property binding rather than a map-only engine path. */
+    public static final class Item {
+        public int value;
+
+        public Item() {
+        }
+
+        public Item(int value) {
+            this.value = value;
+        }
+    }
+
+    /** Custom adapter fixture. */
+    public record Label(String value) {
+    }
+
+    /** Non-final DTO verifies that neutral registrations never implicitly cover subclasses. */
+    public static class BaseItem {
+        public int value;
+
+        public BaseItem(int value) {
+            this.value = value;
+        }
+    }
+
+    /** Subclass retains its independent bean binding when only its base class has an adapter. */
+    public static final class DetailedItem extends BaseItem {
+        public int extra;
+
+        public DetailedItem() {
+            super(0);
+        }
+    }
+
+    private static final class ExactModule implements JsonModule {
+        @Override
+        public String id() {
+            return "exact";
+        }
+
+        @Override
+        public void configure(JsonModuleContext context) {
+            context.add(BaseItem.class, new BaseAdapter());
+            context.add(CharSequence.class, new SequenceAdapter());
+        }
+    }
+
+    private static final class BaseAdapter implements JsonAdapter<BaseItem> {
+        @Override
+        public void write(BaseItem value, JsonWriter writer) {
+            writer.value(value.value);
+        }
+
+        @Override
+        public BaseItem read(JsonReader reader) {
+            return new BaseItem(reader.readValue(JsonType.of(Integer.class)));
+        }
+    }
+
+    private static final class SequenceAdapter implements JsonAdapter<CharSequence> {
+        @Override
+        public void write(CharSequence value, JsonWriter writer) {
+            writer.value(value.toString());
+        }
+
+        @Override
+        public CharSequence read(JsonReader reader) {
+            return new StringBuilder(reader.readValue(JsonType.of(String.class)));
+        }
+    }
+
+    private static final class LabelsModule implements JsonModule {
+        @Override
+        public String id() {
+            return "labels";
+        }
+
+        @Override
+        public void configure(JsonModuleContext context) {
+            context.add(Label.class, new LabelAdapter());
+        }
+    }
+
+    private static final class LabelAdapter implements JsonAdapter<Label> {
+        @Override
+        public void write(Label value, JsonWriter writer) {
+            writer.value("label:" + value.value());
+        }
+
+        @Override
+        public Label read(JsonReader reader) {
+            return new Label(reader.readValue(JsonType.of(String.class)).substring(6));
+        }
+    }
+
+    private static final class DuplicateLabelsModule implements JsonModule {
+        @Override
+        public String id() {
+            return "duplicate";
+        }
+
+        @Override
+        public void configure(JsonModuleContext context) {
+            JsonModule labels = new LabelsModule();
+            labels.configure(context);
+            labels.configure(context);
+        }
+    }
+
+    private static final class BrokenOutput extends java.io.OutputStream {
+        @Override
+        public void write(int value) throws IOException {
+            throw new IOException("broken target");
+        }
+    }
+
+    private static final class BrokenInput extends java.io.InputStream {
+        @Override
+        public int read() throws IOException {
+            throw new IOException("broken source");
+        }
+    }
+
+    private static final class TrackedInput extends ByteArrayInputStream {
+        private boolean closed;
+
+        private TrackedInput(byte[] bytes) {
+            super(bytes);
+        }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            super.close();
+        }
+    }
+
+    private static final class TrackedOutput extends ByteArrayOutputStream {
+        private boolean closed;
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            super.close();
+        }
+    }
+}
