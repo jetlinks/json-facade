@@ -5,29 +5,28 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 import org.jetlinks.json.JsonException;
-import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonReadOptions;
 import org.jetlinks.json.JsonReadSession;
 import org.jetlinks.json.JsonToken;
-import org.jetlinks.json.JsonType;
-import org.jetlinks.json.JsonValue;
 
 /** Shared framing/selection state machine. Providers supply incremental tokens, never whole documents.
- * Only the active selected record is materialized; this class owns no threads or source buffers.
+ * Providers buffer and bind the current record's native tokens; no neutral tree round trip is needed.
  */
 public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     /** null token indicates a parser input boundary or genuine EOF, distinguished by exhausted. */
-    protected record Event(JsonToken token, Object value, long start, long end, long line, long endLine) {
+    protected record Event(JsonToken token, String name, long start, long end, long line, long endLine) {
         public Event {
         }
     }
 
-    private final JsonMapper mapper;
-    private final JsonType<T> type;
     private final JsonReadOptions options;
+    private final int maxValueBytes;
     private final Deque<Frame> frames = new ArrayDeque<>();
-    private ValueBuilder record;
+    private boolean recording;
+    private int depth;
+    private int recordDepth;
     private long recordStart;
     private long recordLine;
     private long lastRecordLine;
@@ -38,10 +37,9 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     private boolean inputEnded;
     private boolean pendingCarriageReturn;
 
-    protected AbstractReadSession(JsonMapper mapper, JsonType<T> type, JsonReadOptions options) {
-        this.mapper = mapper;
-        this.type = type;
+    protected AbstractReadSession(JsonReadOptions options, int maxValueBytes) {
         this.options = options;
+        this.maxValueBytes = Math.min(options.maxValueBytes(), maxValueBytes);
     }
 
     protected abstract Event nextEvent();
@@ -50,6 +48,17 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     protected abstract void feedParser(ByteBuffer input);
     protected abstract void finishParser();
     protected abstract void closeParser();
+    /** Begin buffering the record at the engine's current token. */
+    protected abstract void startRecord();
+    /** Append the engine's current token without applying serialization policies. */
+    protected abstract void appendToken();
+    /** Bind and release the completed native record with the configured engine reader. */
+    protected abstract T bindRecord();
+
+    /** Field names are needed only while resolving a configured pointer. */
+    protected final boolean tracksPath() {
+        return options.selection() != null;
+    }
 
     @Override
     public final boolean needsInput() {
@@ -97,38 +106,59 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
 
     @Override
     public final Result<T> read() {
+        return read(() -> false);
+    }
+
+    @Override
+    public final Result<T> read(BooleanSupplier cancelled) {
         ensureOpen();
-        while (true) {
+        while (!cancelled.getAsBoolean()) {
             Event event = nextEvent();
             if (event.token() == null) {
                 return exhausted() ? finishDocument() : Result.needInput();
             }
-            List<String> path = advancePath(event);
-            validateRoot(event, path);
-            if (shouldStart(event, path)) {
-                record = new ValueBuilder();
+            int tokenDepth = advanceDepth(event.token());
+            // Ordinary root/array reads need only depth; paths would allocate once per input value.
+            List<String> path = tracksPath() ? advancePath(event) : List.of();
+            validateRoot(event, tokenDepth);
+            if (shouldStart(event, path, tokenDepth)) {
+                startRecord();
+                recording = true;
+                recordDepth = tokenDepth;
                 recordStart = event.start();
                 recordLine = event.line();
             }
-            if (record != null) {
+            if (recording) {
                 checkSize(event);
-                record.accept(event.token(), event.value());
-                if (record.complete()) {
+                appendToken();
+                if (!isStart(event.token()) && depth == recordDepth) {
                     return finishRecord(event);
                 }
             }
         }
+        return Result.end();
     }
 
-    private boolean shouldStart(Event event, List<String> path) {
-        if (record != null || event.token() == JsonToken.FIELD_NAME || isEnd(event.token())) {
+    private int advanceDepth(JsonToken token) {
+        if (isEnd(token)) {
+            depth--;
+        }
+        int tokenDepth = depth;
+        if (isStart(token)) {
+            depth++;
+        }
+        return tokenDepth;
+    }
+
+    private boolean shouldStart(Event event, List<String> path, int tokenDepth) {
+        if (recording || event.token() == JsonToken.FIELD_NAME || isEnd(event.token())) {
             return false;
         }
         JsonReadOptions.Selection selection = options.selection();
         List<String> target = selection == null ? List.of() : selection.pointer().segments();
         boolean elements = selection == null
                 ? options.mode() == JsonReadOptions.Mode.ARRAY_ELEMENTS : selection.arrayElements();
-        if (path.equals(target)) {
+        if (selection == null ? tokenDepth == 0 : path.equals(target)) {
             if (selected) {
                 throw error("Selected JSON path occurs more than once");
             }
@@ -137,6 +167,9 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
                 throw error("Selected value must be an array");
             }
             return !elements;
+        }
+        if (selection == null) {
+            return elements && tokenDepth == 1;
         }
         return elements && path.size() == target.size() + 1 && path.subList(0, target.size()).equals(target);
     }
@@ -148,30 +181,19 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
             }
             lastRecordLine = recordLine;
         }
-        Object value = record.value();
-        record = null;
-        if (type.type() == JsonValue.class) {
-            return Result.value(castTree(value));
-        }
-        return Result.value(mapper.convert(value, type));
-    }
-
-    @SuppressWarnings("unchecked")
-    private T castTree(Object value) {
-        // The requested type is exactly JsonValue, checked before this cast.
-        return (T) JsonValue.of(value);
+        recording = false;
+        return Result.value(bindRecord());
     }
 
     private void checkSize(Event event) {
         long size = event.end() - recordStart + 1;
-        int limit = Math.min(options.maxValueBytes(), mapper.options().maxValueBytes());
-        if (size > limit) {
+        if (size > maxValueBytes) {
             throw new JsonException(JsonException.Kind.LIMIT, "JSON record exceeds byte budget");
         }
     }
 
     private Result<T> finishDocument() {
-        if (record != null || !frames.isEmpty()) {
+        if (recording || depth != 0) {
             throw error("Incomplete JSON document");
         }
         boolean requiresDocument = options.mode() == JsonReadOptions.Mode.SINGLE_VALUE
@@ -182,11 +204,11 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
         return Result.end();
     }
 
-    private void validateRoot(Event event, List<String> path) {
+    private void validateRoot(Event event, int tokenDepth) {
         if (event.token() == JsonToken.FIELD_NAME) {
             return;
         }
-        if (path.isEmpty()) {
+        if (tokenDepth == 0) {
             if (!isEnd(event.token())) {
                 roots++;
                 if (roots > 1 && (options.mode() == JsonReadOptions.Mode.SINGLE_VALUE
@@ -211,7 +233,7 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     private List<String> advancePath(Event event) {
         JsonToken token = event.token();
         if (token == JsonToken.FIELD_NAME) {
-            frames.peek().field = (String) event.value();
+            frames.peek().field = event.name();
             return frames.peek().path;
         }
         if (isEnd(token)) {
@@ -251,7 +273,7 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     public final void close() {
         if (!closed) {
             closed = true;
-            record = null;
+            recording = false;
             frames.clear();
             closeParser();
         }

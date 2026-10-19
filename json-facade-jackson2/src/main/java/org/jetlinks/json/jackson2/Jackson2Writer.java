@@ -1,15 +1,18 @@
 package org.jetlinks.json.jackson2;
 
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.SerializerProvider;
 import org.jetlinks.json.JsonValue;
 import org.jetlinks.json.JsonWriter;
 
 /** Thin generator cursor; caller ownership and no auto-completion are configured by the provider. */
 final class Jackson2Writer implements JsonWriter {
     private final JsonGenerator generator;
+    private final SerializerProvider context;
 
-    Jackson2Writer(JsonGenerator generator) {
+    Jackson2Writer(JsonGenerator generator, SerializerProvider context) {
         this.generator = generator;
+        this.context = context;
     }
 
     @Override
@@ -55,7 +58,8 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void value(Object value) {
         Jackson2Support.call(() -> {
-            generator.writeObject(value instanceof JsonValue node ? node.toJavaValue() : value);
+            // Re-enter the current operation's context, not the codec's shared mapper configuration.
+            context.defaultSerializeValue(value instanceof JsonValue node ? node.toJavaValue() : value, generator);
             return null;
         });
     }

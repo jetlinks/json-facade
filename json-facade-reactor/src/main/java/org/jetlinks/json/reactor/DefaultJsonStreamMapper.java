@@ -43,22 +43,22 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
     private <T> Flux<T> read(Flux<ByteBuffer> input, JsonType<T> type, JsonReadOptions options) {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(options, "options");
-        return Flux.using(() -> new SessionGuard<>(mapper.readSession(type, options)), session ->
+        return Flux.using(() -> new ReadSessionResource<>(mapper.readSession(type, options)), session ->
                 input.concatMap(chunk -> {
                     session.feed(chunk);
                     return drain(session, options);
                 }, 0).concatWith(Flux.defer(() -> {
                     session.endInput();
                     return drain(session, options);
-                })), SessionGuard::close);
+                })), ReadSessionResource::close);
     }
 
-    private static <T> Flux<T> drain(SessionGuard<T> session, JsonReadOptions options) {
+    private static <T> Flux<T> drain(ReadSessionResource<T> session, JsonReadOptions options) {
         return Flux.generate(sink -> emit(session, options, sink));
     }
 
-    private static <T> void emit(SessionGuard<T> session, JsonReadOptions options, SynchronousSink<T> sink) {
-        while (true) {
+    private static <T> void emit(ReadSessionResource<T> session, JsonReadOptions options, SynchronousSink<T> sink) {
+        while (!session.cancelled()) {
             JsonReadSession.Result<T> result = session.read();
             if (result.state() != JsonReadSession.State.VALUE) {
                 sink.complete();
@@ -73,6 +73,7 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
                 return;
             }
         }
+        sink.complete();
     }
 
     @Override
@@ -92,7 +93,7 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
         return Flux.defer(() -> {
             int limit = Math.min(options.maxValueBytes(), mapper.options().maxValueBytes());
             BoundedJsonOutput output = new BoundedJsonOutput(limit);
-            mapper.write(value, output);
+            mapper.writeCompact(value, output);
             byte[] record = output.bytes();
             Flux<byte[]> chunks = chunks(record, options.chunkSize());
             if (state.array) {
@@ -130,29 +131,4 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
         }
     }
 
-    /** Serializes cancellation cleanup with synchronous CPU parsing, without scheduling or background I/O. */
-    private static final class SessionGuard<T> implements AutoCloseable {
-        private final JsonReadSession<T> session;
-
-        private SessionGuard(JsonReadSession<T> session) {
-            this.session = session;
-        }
-
-        private synchronized void feed(ByteBuffer input) {
-            session.feed(input);
-        }
-
-        private synchronized JsonReadSession.Result<T> read() {
-            return session.read();
-        }
-
-        private synchronized void endInput() {
-            session.endInput();
-        }
-
-        @Override
-        public synchronized void close() {
-            session.close();
-        }
-    }
 }

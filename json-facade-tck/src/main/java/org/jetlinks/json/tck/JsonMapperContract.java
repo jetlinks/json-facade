@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
@@ -93,6 +94,95 @@ public abstract class JsonMapperContract {
         assertFalse(output.contains("absent"));
         assertTrue(output.contains("\n"));
         assertEquals("[null]", mapper().write(java.util.Collections.singletonList(null)));
+    }
+
+    @Test
+    void compactOutputUsesBindingPoliciesWithoutChangingTheSharedPrettyMapper() {
+        JsonOptions options = new JsonOptions(true, false, false, true, true, 256, 10000, 1000, 10000);
+        JsonMapper json = mapper(options, new LabelsModule());
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("label", new Label("a"));
+        values.put("tree", JsonValue.of(Map.of("nested", List.of(new Label("b")))));
+        values.put("null", null);
+        TrackedOutput target = new TrackedOutput();
+        json.writeCompact(values, target);
+        assertEquals("{\"label\":\"label:a\",\"tree\":{\"nested\":[\"label:b\"]}}",
+                target.toString(StandardCharsets.UTF_8));
+        assertFalse(target.closed);
+        assertTrue(json.write(values).contains("\n"));
+    }
+
+    @Test
+    void incrementalReadsDoNotApplyNullOmissionDuringBinding() {
+        JsonOptions options = new JsonOptions(true, false, false, true, false, 256, 10000, 1000, 10000);
+        JsonMapper json = mapper(options);
+        byte[] input = "{\"value\":null}".getBytes(StandardCharsets.UTF_8);
+        assertNull(json.read(input, DefaultItem.class).value);
+        for (int split = 0; split <= input.length; split++) {
+            DefaultItem item = read(json, input, split, JsonType.of(DefaultItem.class),
+                    JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE)).get(0);
+            assertNull(item.value);
+        }
+    }
+
+    @Test
+    void incrementalNumbersRetainNativeTypesPrecisionAndInputText() {
+        for (boolean lossless : List.of(false, true)) {
+            JsonOptions options = new JsonOptions(lossless, false, false, false, false, 256, 10000, 1000, 10000);
+            JsonMapper json = mapper(options);
+            for (String number : List.of("1.25", "1e2", "1.250", "1e-50", "9223372036854775808")) {
+                byte[] input = number.getBytes(StandardCharsets.UTF_8);
+                for (int split = 0; split <= input.length; split++) {
+                    JsonReadOptions framing = JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE);
+                    Object expected = json.read(input, Object.class);
+                    Object actual = read(json, input, split, JsonType.of(Object.class), framing).get(0);
+                    assertEquals(expected.getClass(), actual.getClass(), number);
+                    assertEquals(expected, actual, number);
+                    assertEquals(json.read(input, String.class),
+                            read(json, input, split, JsonType.of(String.class), framing).get(0), number);
+                }
+            }
+        }
+    }
+
+    @Test
+    void incrementalIntegerNegativeZeroFollowsNativeTokenizerNormalization() {
+        JsonMapper json = mapper();
+        byte[] input = "-0".getBytes(StandardCharsets.UTF_8);
+        assertEquals("-0", json.read(input, String.class));
+        for (int split = 0; split <= input.length; split++) {
+            JsonReadOptions framing = JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE);
+            assertEquals(List.of(0), read(json, input, split, JsonType.of(Object.class), framing));
+            // Both native nonblocking tokenizers normalize integer -0 before exposing token text.
+            assertEquals(List.of("0"), read(json, input, split, JsonType.of(String.class), framing));
+        }
+    }
+
+    @Test
+    void incrementalAdaptersReceiveOriginalDuplicateFieldsAndNumericText() {
+        JsonMapper json = mapper(JsonOptions.DEFAULT, new TokenLogModule());
+        byte[] input = "{\"x\":1,\"x\":2,\"n\":1e2}".getBytes(StandardCharsets.UTF_8);
+        TokenLog expected = new TokenLog("FIELD_NAME:x;NUMBER:1;FIELD_NAME:x;NUMBER:2;FIELD_NAME:n;NUMBER:1e2;");
+        assertEquals(expected, json.read(input, TokenLog.class));
+        for (int split = 0; split <= input.length; split++) {
+            assertEquals(List.of(expected), read(json, input, split, JsonType.of(TokenLog.class),
+                    JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE)));
+        }
+        JsonMapper labels = mapper(JsonOptions.DEFAULT, new LabelsModule());
+        byte[] nested = "[\"label:a\",\"label:b\"]".getBytes(StandardCharsets.UTF_8);
+        assertEquals(List.of(List.of(new Label("a"), new Label("b"))), read(labels, nested, 3,
+                JsonType.listOf(JsonType.of(Label.class)), JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE)));
+    }
+
+    @Test
+    void incrementalCancellationStopsBeforeTheRemainderIsParsed() {
+        AtomicInteger checks = new AtomicInteger();
+        try (JsonReadSession<Object> session = mapper().readSession(JsonType.of(Object.class),
+                JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE))) {
+            session.feed(ByteBuffer.wrap("{\"a\":[1,INVALID".getBytes(StandardCharsets.UTF_8)));
+            assertEquals(JsonReadSession.State.END, session.read(() -> checks.incrementAndGet() == 4).state());
+            assertEquals(4, checks.get());
+        }
     }
 
     @Test
@@ -383,6 +473,43 @@ public abstract class JsonMapperContract {
 
         public Item(int value) {
             this.value = value;
+        }
+    }
+
+    /** Distinguishes a missing property from an explicit JSON null. */
+    public static final class DefaultItem {
+        public String value = "initial";
+    }
+
+    /** Observes input token semantics before a custom reader builds its result. */
+    public record TokenLog(String value) {
+    }
+
+    private static final class TokenLogModule implements JsonModule {
+        @Override
+        public String id() {
+            return "token-log";
+        }
+
+        @Override
+        public void configure(JsonModuleContext context) {
+            context.add(TokenLog.class, new TokenLogAdapter());
+        }
+    }
+
+    private static final class TokenLogAdapter implements JsonAdapter<TokenLog> {
+        @Override
+        public void write(TokenLog value, JsonWriter writer) {
+            writer.value(value.value());
+        }
+
+        @Override
+        public TokenLog read(JsonReader reader) {
+            StringBuilder tokens = new StringBuilder();
+            while (reader.next() != JsonToken.END_OBJECT) {
+                tokens.append(reader.current()).append(':').append(reader.text()).append(';');
+            }
+            return new TokenLog(tokens.toString());
         }
     }
 

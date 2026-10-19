@@ -5,6 +5,8 @@ import java.io.OutputStream;
 import java.io.Reader;
 import java.io.Writer;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
 import org.jetlinks.json.JsonReadOptions;
@@ -18,10 +20,12 @@ import org.jetlinks.json.JsonWriter;
 final class Jackson2Mapper implements JsonMapper {
     private final ObjectMapper mapper;
     private final JsonOptions options;
+    private final ObjectWriter compactWriter;
 
     Jackson2Mapper(ObjectMapper mapper, JsonOptions options) {
         this.mapper = mapper;
         this.options = options;
+        compactWriter = mapper.writer().without(SerializationFeature.INDENT_OUTPUT);
     }
 
     @Override
@@ -41,6 +45,14 @@ final class Jackson2Mapper implements JsonMapper {
     public void write(Object value, Writer output) {
         Jackson2Support.call(() -> {
             mapper.writeValue(output, unwrap(value));
+            return null;
+        });
+    }
+
+    @Override
+    public void writeCompact(Object value, OutputStream output) {
+        Jackson2Support.call(() -> {
+            compactWriter.writeValue(output, unwrap(value));
             return null;
         });
     }
@@ -67,7 +79,8 @@ final class Jackson2Mapper implements JsonMapper {
 
     @Override
     public JsonWriter writer(OutputStream output) {
-        return Jackson2Support.call(() -> new Jackson2Writer(mapper.getFactory().createGenerator(output)));
+        return Jackson2Support.call(() -> new Jackson2Writer(mapper.getFactory().createGenerator(output),
+                mapper.getSerializerProviderInstance()));
     }
 
     @Override

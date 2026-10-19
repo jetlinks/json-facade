@@ -6,26 +6,40 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import org.jetlinks.json.Json;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
 import org.jetlinks.json.JsonReadOptions;
+import org.jetlinks.json.JsonReader;
 import org.jetlinks.json.JsonType;
 import org.jetlinks.json.JsonValue;
 import org.jetlinks.json.JsonWriteOptions;
+import org.jetlinks.json.JsonWriter;
 import org.jetlinks.json.jackson2.Jackson2Provider;
 import org.jetlinks.json.jackson3.Jackson3Provider;
 import org.jetlinks.json.spi.JsonProvider;
+import org.jetlinks.json.spi.JsonAdapter;
+import org.jetlinks.json.spi.JsonModule;
+import org.jetlinks.json.spi.JsonModuleContext;
+import org.reactivestreams.Subscription;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.BaseSubscriber;
 import reactor.test.StepVerifier;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -56,6 +70,52 @@ class JsonStreamMapperTest {
                 .thenCancel().verify();
         assertTrue(cancelled.get());
         assertEquals(1, requested.get());
+    }
+
+    @ParameterizedTest
+    @MethodSource("providers")
+    void cancellationDoesNotWaitForAnActiveNativeBindingCallback(JsonProvider provider) throws Exception {
+        GatedModule module = new GatedModule();
+        JsonMapper mapper = Json.builder().provider(provider).module(module).build();
+        AtomicBoolean cancelled = new AtomicBoolean();
+        AtomicInteger delivered = new AtomicInteger();
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        BaseSubscriber<GatedItem> subscriber = new BaseSubscriber<>() {
+            @Override
+            protected void hookOnSubscribe(Subscription subscription) {
+                // Start demand on a separate thread so cancellation can race with real binding.
+            }
+
+            @Override
+            protected void hookOnNext(GatedItem item) {
+                delivered.incrementAndGet();
+            }
+
+            @Override
+            protected void hookOnError(Throwable failure) {
+                error.set(failure);
+            }
+        };
+        Flux<byte[]> input = Flux.just(bytes("[1,2]")).doOnCancel(() -> cancelled.set(true));
+        JsonStreamMapper.of(mapper).readBytes(input, JsonType.of(GatedItem.class),
+                JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS)).subscribe(subscriber);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> request = executor.submit(() -> subscriber.request(1));
+            assertTrue(module.entered.await(5, TimeUnit.SECONDS));
+            executor.submit(subscriber::cancel).get(2, TimeUnit.SECONDS);
+            assertTrue(cancelled.get());
+            assertEquals(1, module.release.getCount());
+            module.release.countDown();
+            request.get(5, TimeUnit.SECONDS);
+            assertEquals(0, delivered.get());
+            assertNull(error.get());
+        } finally {
+            module.release.countDown();
+            subscriber.cancel();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
     }
 
     @ParameterizedTest
@@ -204,4 +264,49 @@ class JsonStreamMapperTest {
     private static byte[] bytes(String input) {
         return input.getBytes(StandardCharsets.UTF_8);
     }
+
+    /** Callback gating makes the cancellation ordering deterministic without sleeps. */
+    private static final class GatedModule implements JsonModule {
+        private final CountDownLatch entered = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+
+        @Override
+        public String id() {
+            return "gated";
+        }
+
+        @Override
+        public void configure(JsonModuleContext context) {
+            context.add(GatedItem.class, new GatedAdapter(entered, release));
+        }
+    }
+
+    private static final class GatedAdapter implements JsonAdapter<GatedItem> {
+        private final CountDownLatch entered;
+        private final CountDownLatch release;
+
+        private GatedAdapter(CountDownLatch entered, CountDownLatch release) {
+            this.entered = entered;
+            this.release = release;
+        }
+
+        @Override
+        public void write(GatedItem item, JsonWriter writer) {
+            writer.value(item.value());
+        }
+
+        @Override
+        public GatedItem read(JsonReader reader) {
+            entered.countDown();
+            try {
+                assertTrue(release.await(10, TimeUnit.SECONDS));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+            return new GatedItem(reader.readValue(JsonType.of(Integer.class)));
+        }
+    }
+
+    private record GatedItem(int value) { }
 }

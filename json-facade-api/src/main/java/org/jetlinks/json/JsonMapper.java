@@ -16,6 +16,11 @@ public interface JsonMapper {
     JsonOptions options();
     /** Serialize one root value. Caller owns and closes the target. */
     void write(Object value, OutputStream output);
+    /** Serialize compact JSON for this operation without changing the shared mapper's pretty policy.
+     * Caller owns the target; binding modules and other output policies remain effective.
+     * @since 1.0.0
+     */
+    void writeCompact(Object value, OutputStream output);
     /** Serialize one root value to a caller-owned character target. */
     void write(Object value, Writer output);
     /** Read exactly one complete value and reject trailing content. Does not close input. */

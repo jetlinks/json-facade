@@ -1,6 +1,7 @@
 package org.jetlinks.json;
 
 import java.nio.ByteBuffer;
+import java.util.function.BooleanSupplier;
 
 /** Demand-driven UTF-8 parsing SPI; one session per read/subscription, never shared concurrently.
  * Provider implementations own parser state only, with no threads or external I/O.
@@ -21,6 +22,16 @@ public interface JsonReadSession<T> extends AutoCloseable {
      * Errors throw JsonException and are never silently skipped.
      */
     Result<T> read();
+    /** Read with cooperative cancellation, checked between tokens when supported by the provider.
+     * A cancelled read may return END without validating the remainder; the caller must still close.
+     * The predicate must be thread-safe and must not block or mutate the parser.
+     * @param cancelled indicates that the caller no longer needs a result
+     * @return the next result, or END after cancellation
+     * @since 1.0.0
+     */
+    default Result<T> read(BooleanSupplier cancelled) {
+        return cancelled.getAsBoolean() ? Result.end() : read();
+    }
     /** Signal genuine EOF once; incomplete tokens/documents must fail in read(). */
     void endInput();
     /** Idempotently release parser and current record state; never release caller memory. */

@@ -5,14 +5,10 @@ import java.io.OutputStream;
 import java.util.Objects;
 import org.jetlinks.json.JsonException;
 
-/** Compacts an engine's valid JSON while enforcing the budget before allocating more record bytes.
- * Whitespace inside strings is untouched; this is an output filter, not an input JSON parser.
- */
+/** Enforces the record byte budget before forwarding native compact output in bulk. */
 final class BoundedJsonOutput extends OutputStream {
     private final ByteArrayOutputStream output = new ByteArrayOutputStream();
     private final int limit;
-    private boolean quoted;
-    private boolean escaped;
 
     BoundedJsonOutput(int limit) {
         this.limit = limit;
@@ -20,28 +16,20 @@ final class BoundedJsonOutput extends OutputStream {
 
     @Override
     public void write(int value) {
-        int b = value & 0xff;
-        if (!quoted && (b == ' ' || b == '\t' || b == '\r' || b == '\n')) {
-            return;
-        }
-        if (output.size() == limit) {
-            throw new JsonException(JsonException.Kind.LIMIT, "JSON output record exceeds byte budget");
-        }
-        output.write(b);
-        if (escaped) {
-            escaped = false;
-        } else if (quoted && b == '\\') {
-            escaped = true;
-        } else if (b == '"') {
-            quoted = !quoted;
-        }
+        checkBudget(1);
+        output.write(value);
     }
 
     @Override
     public void write(byte[] bytes, int offset, int length) {
         Objects.checkFromIndexSize(offset, length, bytes.length);
-        for (int i = offset; i < offset + length; i++) {
-            write(bytes[i]);
+        checkBudget(length);
+        output.write(bytes, offset, length);
+    }
+
+    private void checkBudget(int length) {
+        if (length > limit - output.size()) {
+            throw new JsonException(JsonException.Kind.LIMIT, "JSON output record exceeds byte budget");
         }
     }
 

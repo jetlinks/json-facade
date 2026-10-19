@@ -77,7 +77,7 @@ public final class Jackson2Provider implements JsonProvider {
         module.addSerializer(JsonValue.class, new JsonSerializer<>() {
             @Override
             public void serialize(JsonValue value, JsonGenerator output, SerializerProvider context) throws IOException {
-                output.writeObject(value.toJavaValue());
+                context.defaultSerializeValue(value.toJavaValue(), output);
             }
         });
         module.addDeserializer(JsonValue.class, new JsonDeserializer<>() {
@@ -137,7 +137,7 @@ public final class Jackson2Provider implements JsonProvider {
 
         @Override
         public void serialize(T value, JsonGenerator output, SerializerProvider context) {
-            adapter.write(value, new Jackson2Writer(output));
+            adapter.write(value, new Jackson2Writer(output, context));
         }
     }
 
