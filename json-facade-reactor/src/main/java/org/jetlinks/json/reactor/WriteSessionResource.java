@@ -5,6 +5,7 @@ import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonWriteOptions;
 import org.jetlinks.json.JsonWriter;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.SynchronousSink;
 
 /** One compact generator/context per subscription. Each synchronous write unit is byte bounded. */
@@ -13,6 +14,8 @@ final class WriteSessionResource extends OperationResource {
     private final SegmentedJsonOutput output;
     private final JsonWriter writer;
     private final DocumentState document;
+    // Only one concatMap inner subscribes at a time; queued bytes stay in the owned output.
+    private final Flux<byte[]> drain = Flux.generate(this::emit);
     private long records;
 
     WriteSessionResource(JsonMapper mapper, JsonWriteOptions options, boolean events) {
@@ -23,7 +26,7 @@ final class WriteSessionResource extends OperationResource {
         document = events ? new DocumentState(mapper.options()) : null;
     }
 
-    void start() {
+    Flux<byte[]> start() {
         if (acquire()) {
             try {
                 output.beginUnit(0);
@@ -35,9 +38,10 @@ final class WriteSessionResource extends OperationResource {
                 release();
             }
         }
+        return drain;
     }
 
-    void encode(Object value) {
+    Flux<byte[]> encode(Object value) {
         if (acquire()) {
             try {
                 if (format == JsonWriteOptions.Format.SINGLE_VALUE && records != 0) {
@@ -60,9 +64,10 @@ final class WriteSessionResource extends OperationResource {
                 release();
             }
         }
+        return drain;
     }
 
-    void event(JsonEvent event) {
+    Flux<byte[]> event(JsonEvent event) {
         if (acquire()) {
             try {
                 output.beginUnit(document.prefixBytes(event));
@@ -72,9 +77,10 @@ final class WriteSessionResource extends OperationResource {
                 release();
             }
         }
+        return drain;
     }
 
-    void finish() {
+    Flux<byte[]> finish() {
         if (acquire()) {
             try {
                 output.beginUnit(0);
@@ -90,9 +96,10 @@ final class WriteSessionResource extends OperationResource {
                 release();
             }
         }
+        return drain;
     }
 
-    void emit(SynchronousSink<byte[]> sink) {
+    private void emit(SynchronousSink<byte[]> sink) {
         if (!acquire()) {
             sink.complete();
             return;

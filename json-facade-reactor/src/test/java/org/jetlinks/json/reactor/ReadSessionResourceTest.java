@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
+import org.jetlinks.json.JsonReadOptions;
 import org.jetlinks.json.JsonReadSession;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -22,7 +23,7 @@ class ReadSessionResourceTest {
     @Test
     void idleCancellationClosesOnceAndPreventsFurtherParserAccess() {
         GatedSession session = new GatedSession(Operation.READ);
-        ReadSessionResource<Integer> resource = new ReadSessionResource<>(session);
+        ReadSessionResource<Integer> resource = new ReadSessionResource<>(session, JsonReadOptions.NullPolicy.FAIL);
         resource.close();
         resource.close();
         resource.feed(ByteBuffer.allocate(0));
@@ -37,7 +38,7 @@ class ReadSessionResourceTest {
     @EnumSource(Operation.class)
     void cancellationReturnsBeforeTheActiveOperationAndCleanupRunsOnce(Operation operation) throws Exception {
         GatedSession session = new GatedSession(operation);
-        ReadSessionResource<Integer> resource = new ReadSessionResource<>(session);
+        ReadSessionResource<Integer> resource = new ReadSessionResource<>(session, JsonReadOptions.NullPolicy.FAIL);
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try {
             Future<?> active = executor.submit(() -> invoke(resource, operation));

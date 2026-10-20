@@ -27,104 +27,116 @@ final class Jackson3Writer implements JsonWriter {
 
     @Override
     public void beginObject() {
-        Jackson3Support.call(() -> {
+        try {
             generator.writeStartObject();
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void endObject() {
-        Jackson3Support.call(() -> {
+        try {
             generator.writeEndObject();
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void beginArray() {
-        Jackson3Support.call(() -> {
+        try {
             generator.writeStartArray();
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void endArray() {
-        Jackson3Support.call(() -> {
+        try {
             generator.writeEndArray();
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void name(String name) {
-        Jackson3Support.call(() -> {
+        try {
             generator.writeName(name);
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void value(Object value) {
-        Jackson3Support.call(() -> {
+        try {
             if (valueWriter != null) {
                 // Per-value identity/context lifetime stays bounded while the native generator is reused.
                 valueWriter.writeValue(generator, JsonValues.bindingValue(value));
             } else {
                 java.util.Objects.requireNonNull(context).writeValue(generator, JsonValues.bindingValue(value));
             }
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void number(String value) {
         JsonNumbers.validate(value);
-        Jackson3Support.call(() -> {
+        try {
             generator.writeNumber(value);
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void string(String value) {
         java.util.Objects.requireNonNull(value, "value");
-        Jackson3Support.call(() -> {
+        try {
             generator.writeString(value);
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void bool(boolean value) {
-        Jackson3Support.call(() -> {
+        try {
             generator.writeBoolean(value);
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void nullValue() {
-        Jackson3Support.call(() -> {
+        try {
             generator.writeNull();
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void flush() {
-        Jackson3Support.call(() -> {
+        try {
             generator.flush();
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     public void close() {
-        Jackson3Support.call(() -> {
+        try {
             generator.close();
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 }

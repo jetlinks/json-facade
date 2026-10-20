@@ -1,5 +1,6 @@
 package org.jetlinks.json.jackson2;
 
+import java.io.IOException;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectWriter;
 import com.fasterxml.jackson.databind.SerializerProvider;
@@ -27,47 +28,52 @@ final class Jackson2Writer implements JsonWriter {
 
     @Override
     public void beginObject() {
-        Jackson2Support.call(() -> {
+        try {
             generator.writeStartObject();
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void endObject() {
-        Jackson2Support.call(() -> {
+        try {
             generator.writeEndObject();
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void beginArray() {
-        Jackson2Support.call(() -> {
+        try {
             generator.writeStartArray();
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void endArray() {
-        Jackson2Support.call(() -> {
+        try {
             generator.writeEndArray();
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void name(String name) {
-        Jackson2Support.call(() -> {
+        try {
             generator.writeFieldName(name);
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void value(Object value) {
-        Jackson2Support.call(() -> {
+        try {
             // Re-enter the current operation's context, not the codec's shared mapper configuration.
             if (valueWriter != null) {
                 // Reuse generator buffers, but bound each value in a fresh context: object IDs must not retain a stream.
@@ -75,57 +81,64 @@ final class Jackson2Writer implements JsonWriter {
             } else {
                 java.util.Objects.requireNonNull(context).defaultSerializeValue(JsonValues.bindingValue(value), generator);
             }
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void number(String value) {
         JsonNumbers.validate(value);
-        Jackson2Support.call(() -> {
+        try {
             generator.writeNumber(value);
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void string(String value) {
         java.util.Objects.requireNonNull(value, "value");
-        Jackson2Support.call(() -> {
+        try {
             generator.writeString(value);
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void bool(boolean value) {
-        Jackson2Support.call(() -> {
+        try {
             generator.writeBoolean(value);
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void nullValue() {
-        Jackson2Support.call(() -> {
+        try {
             generator.writeNull();
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void flush() {
-        Jackson2Support.call(() -> {
+        try {
             generator.flush();
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     public void close() {
-        Jackson2Support.call(() -> {
+        try {
             generator.close();
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 }

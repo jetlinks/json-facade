@@ -1,5 +1,6 @@
 package org.jetlinks.json.jackson3;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.async.ByteBufferFeeder;
@@ -46,7 +47,7 @@ final class Jackson3Session<T> extends AbstractReadSession<T> {
             var end = parser.currentLocation();
             return event(token, name, start.getByteOffset(), end.getByteOffset(),
                     start.getLineNr(), end.getLineNr());
-        } catch (Exception error) {
+        } catch (RuntimeException error) {
             throw Jackson3Support.failure(error);
         }
     }
@@ -54,14 +55,16 @@ final class Jackson3Session<T> extends AbstractReadSession<T> {
     @Override
     @SuppressWarnings("unchecked")
     protected T bindEvent(JsonToken token) {
-        return Jackson3Support.call(() -> {
+        try {
             String text = switch (token) {
                 case FIELD_NAME, STRING, NUMBER, BOOLEAN -> parser.getString();
                 default -> null;
             };
             // Only the eventSession factory enables this branch, with T fixed to JsonEvent.
             return (T) JsonEvent.token(token, text);
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
@@ -71,7 +74,7 @@ final class Jackson3Session<T> extends AbstractReadSession<T> {
 
     @Override
     protected void appendToken() {
-        Jackson3Support.call(() -> {
+        try {
             if (parser.currentToken().isNumeric()) {
                 // Delay number conversion until binding, retaining text for String/custom readers.
                 record.writeNumber(parser.getString(),
@@ -79,19 +82,20 @@ final class Jackson3Session<T> extends AbstractReadSession<T> {
             } else {
                 record.copyCurrentEvent(parser);
             }
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
     protected T bindRecord() {
         TokenBuffer complete = record;
         record = null;
-        return Jackson3Support.call(() -> {
-            try (complete) {
-                return reader.readValue(complete);
-            }
-        });
+        try (complete) {
+            return reader.readValue(complete);
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
@@ -106,10 +110,11 @@ final class Jackson3Session<T> extends AbstractReadSession<T> {
 
     @Override
     protected void feedParser(ByteBuffer input) {
-        Jackson3Support.call(() -> {
+        try {
             feeder.feedInput(input);
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 
     @Override
@@ -119,14 +124,13 @@ final class Jackson3Session<T> extends AbstractReadSession<T> {
 
     @Override
     protected void closeParser() {
-        Jackson3Support.call(() -> {
-            try (parser) {
-                if (record != null) {
-                    record.close();
-                    record = null;
-                }
+        try (parser) {
+            if (record != null) {
+                record.close();
+                record = null;
             }
-            return null;
-        });
+        } catch (RuntimeException error) {
+            throw Jackson3Support.failure(error);
+        }
     }
 }

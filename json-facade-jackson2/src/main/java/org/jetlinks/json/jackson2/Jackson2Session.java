@@ -49,7 +49,7 @@ final class Jackson2Session<T> extends AbstractReadSession<T> {
             var end = parser.currentLocation();
             return event(token, name, start.getByteOffset(), end.getByteOffset(),
                     start.getLineNr(), end.getLineNr());
-        } catch (Exception error) {
+        } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
     }
@@ -57,14 +57,16 @@ final class Jackson2Session<T> extends AbstractReadSession<T> {
     @Override
     @SuppressWarnings("unchecked")
     protected T bindEvent(JsonToken token) {
-        return Jackson2Support.call(() -> {
+        try {
             String text = switch (token) {
                 case FIELD_NAME, STRING, NUMBER, BOOLEAN -> parser.getText();
                 default -> null;
             };
             // Only the eventSession factory enables this branch, with T fixed to JsonEvent.
             return (T) JsonEvent.token(token, text);
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
@@ -74,7 +76,7 @@ final class Jackson2Session<T> extends AbstractReadSession<T> {
 
     @Override
     protected void appendToken() {
-        Jackson2Support.call(() -> {
+        try {
             if (parser.currentToken().isNumeric()) {
                 // The public TokenBuffer API preserves both the numeric token kind and its lexeme.
                 // Binding then chooses Double/BigDecimal/coercion using the reader's configuration.
@@ -83,19 +85,20 @@ final class Jackson2Session<T> extends AbstractReadSession<T> {
             } else {
                 record.copyCurrentEvent(parser);
             }
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
     protected T bindRecord() {
         TokenBuffer complete = record;
         record = null;
-        return Jackson2Support.call(() -> {
-            try (complete; JsonParser input = complete.asParser(mapper)) {
-                return reader.readValue(input);
-            }
-        });
+        try (complete; JsonParser input = complete.asParser(mapper)) {
+            return reader.readValue(input);
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
@@ -110,10 +113,11 @@ final class Jackson2Session<T> extends AbstractReadSession<T> {
 
     @Override
     protected void feedParser(ByteBuffer input) {
-        Jackson2Support.call(() -> {
+        try {
             feeder.feedInput(input);
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 
     @Override
@@ -123,14 +127,13 @@ final class Jackson2Session<T> extends AbstractReadSession<T> {
 
     @Override
     protected void closeParser() {
-        Jackson2Support.call(() -> {
-            try (parser) {
-                if (record != null) {
-                    record.close();
-                    record = null;
-                }
+        try (parser) {
+            if (record != null) {
+                record.close();
+                record = null;
             }
-            return null;
-        });
+        } catch (IOException | RuntimeException error) {
+            throw Jackson2Support.failure(error);
+        }
     }
 }

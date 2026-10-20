@@ -4,7 +4,6 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.function.Supplier;
 import org.jetlinks.json.JsonEvent;
-import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonReadOptions;
 import org.jetlinks.json.JsonReadSession;
@@ -12,7 +11,6 @@ import org.jetlinks.json.JsonType;
 import org.jetlinks.json.JsonWriteOptions;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.SynchronousSink;
 
 /** Shared adapter. Reactor's concatMap with zero prefetch serializes one input chunk at a time. */
 final class DefaultJsonStreamMapper implements JsonStreamMapper {
@@ -49,37 +47,9 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
 
     private static <T> Flux<T> read(Flux<ByteBuffer> input, Supplier<JsonReadSession<T>> factory,
                                     JsonReadOptions options) {
-        return Flux.using(() -> new ReadSessionResource<>(factory.get()), session ->
-                input.concatMap(chunk -> {
-                    session.feed(chunk);
-                    return drain(session, options);
-                }, 0).concatWith(Flux.defer(() -> {
-                    session.endInput();
-                    return drain(session, options);
-                })), ReadSessionResource::close);
-    }
-
-    private static <T> Flux<T> drain(ReadSessionResource<T> session, JsonReadOptions options) {
-        return Flux.generate(sink -> emit(session, options, sink));
-    }
-
-    private static <T> void emit(ReadSessionResource<T> session, JsonReadOptions options, SynchronousSink<T> sink) {
-        while (!session.cancelled()) {
-            JsonReadSession.Result<T> result = session.read();
-            if (result.state() != JsonReadSession.State.VALUE) {
-                sink.complete();
-                return;
-            }
-            if (result.value() != null) {
-                sink.next(result.value());
-                return;
-            }
-            if (options.nullPolicy() == JsonReadOptions.NullPolicy.FAIL) {
-                sink.error(new JsonException(JsonException.Kind.BINDING, "Reactor cannot emit a Java null record"));
-                return;
-            }
-        }
-        sink.complete();
+        return Flux.using(() -> new ReadSessionResource<>(factory.get(), options.nullPolicy()), session ->
+                input.concatMap(session::decode, 0).concatWith(Flux.defer(session::finish)),
+                ReadSessionResource::close);
     }
 
     @Override
@@ -99,11 +69,9 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
         Objects.requireNonNull(values, "values");
         Objects.requireNonNull(options, "options");
         return Flux.using(() -> new WriteSessionResource(mapper, options, false), session ->
-                Flux.concat(start(session),
-                        Flux.from(values).concatMap(value -> {
-                            session.encode(value);
-                            return drainOutput(session);
-                        }, 0), finish(session)), WriteSessionResource::close);
+                Flux.concat(Flux.defer(session::start),
+                        Flux.from(values).concatMap(session::encode, 0),
+                        Flux.defer(session::finish)), WriteSessionResource::close);
     }
 
     @Override
@@ -114,38 +82,22 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
             throw new IllegalArgumentException("Structural events require SINGLE_VALUE output");
         }
         return Flux.using(() -> new WriteSessionResource(mapper, options, true), session ->
-                Flux.concat(start(session),
-                        Flux.from(events).concatMap(event -> {
-                            session.event(event);
-                            return drainOutput(session);
-                        }, 0), finish(session)), WriteSessionResource::close);
-    }
-
-    private static Flux<byte[]> start(WriteSessionResource session) {
-        return Flux.defer(() -> {
-            session.start();
-            return drainOutput(session);
-        });
-    }
-
-    private static Flux<byte[]> finish(WriteSessionResource session) {
-        return Flux.defer(() -> {
-            session.finish();
-            return drainOutput(session);
-        });
-    }
-
-    private static Flux<byte[]> drainOutput(WriteSessionResource session) {
-        return Flux.generate(session::emit);
+                Flux.concat(Flux.defer(session::start),
+                        Flux.from(events).concatMap(session::event, 0),
+                        Flux.defer(session::finish)), WriteSessionResource::close);
     }
 
     @Override
     public Flux<ByteBuffer> writeBuffers(Publisher<?> values, JsonWriteOptions options) {
-        return writeBytes(values, options).map(bytes -> ByteBuffer.wrap(bytes).asReadOnlyBuffer());
+        return writeBytes(values, options).map(DefaultJsonStreamMapper::readOnlyBuffer);
     }
 
     @Override
     public Flux<ByteBuffer> writeEventBuffers(Publisher<? extends JsonEvent> events, JsonWriteOptions options) {
-        return writeEvents(events, options).map(bytes -> ByteBuffer.wrap(bytes).asReadOnlyBuffer());
+        return writeEvents(events, options).map(DefaultJsonStreamMapper::readOnlyBuffer);
+    }
+
+    private static ByteBuffer readOnlyBuffer(byte[] bytes) {
+        return ByteBuffer.wrap(bytes).asReadOnlyBuffer();
     }
 }
