@@ -15,11 +15,11 @@ Documentation: [完整中文使用手册](docs/user-guide.md) · [Public contrac
 | `json-facade-jackson3` | Jackson 3 Provider | API, Jackson 3 |
 | `json-facade-reactor` | Reactive byte[] / ByteBuffer operations | API, reactor-core |
 | `json-facade-netty` | Optional retained ByteBuf input and allocated segmented output | Reactor adapter, Netty buffer/common |
-| `json-facade-spring` | Optional Spring 6 / Boot 3 default-mapper bridge | Jackson 2 Provider, Spring Context; Boot optional |
+| `json-facade-spring` | Spring 6 / Boot 3 default-mapper bridge and explicit DataBuffer streams | Jackson 2 Provider, Spring Context; Boot/Reactor optional |
 | `json-facade-tck` | Reusable real-engine contract tests | API, JUnit (test utility) |
 | `json-facade-coverage` | Aggregated execution data and coverage gate | Build only |
 
-Add `org.jetlinks:json-facade-api` and one Provider to your application. Add `json-facade-reactor` for ordinary reactive streams, or `json-facade-netty` for reference-counted buffers. The optional Spring module registers a facade bean from Spring's configured Jackson 2 mapper; HTTP codecs and ORM mappers retain their official configuration.
+Add `org.jetlinks:json-facade-api` and one Provider to your application. Add `json-facade-reactor` for ordinary reactive streams, or `json-facade-netty` for reference-counted buffers. The optional Spring module registers a facade bean from Spring's configured Jackson 2 mapper and supports explicitly composed DataBuffer streams through `DataBufferJsonStreamMapper` (add `json-facade-reactor` for this entry point). HTTP codecs and ORM mappers retain their official configuration.
 
 ## Binding and generic types
 

@@ -84,6 +84,61 @@ still uses authoritative `JsonOptions` and rejects conflicting native callbacks.
 Existing Provider streaming implementations are reused. This configuration-only
 adapter changes no HTTP codec and adds no tracing, background executor or MBean.
 
+## Spring DataBuffer streams
+
+`json-facade-spring` provides `DataBufferJsonStreamMapper.of(JsonMapper,
+DataBufferFactory)` for explicit Spring 6 buffer streams. Record `read`/`write`
+and structural `readEvents`/`writeEvents` reuse existing options, selection,
+budgets and Provider parsing/binding. Either current Provider can be supplied.
+The factory is explicit, normally `response.bufferFactory()`. The adapter
+shares configuration but creates state per subscription, without scheduling,
+internal subscriptions or whole-document aggregation.
+
+`read`/`readEvents` consume one transferred ownership per delivered DataBuffer,
+matching Spring request-body/decoder conventions. They do not retain another
+reference. A caller keeping an additional pooled reference must retain it
+explicitly and release its own reference. Upstream owns undelivered buffers and
+its queues; bytes/components must remain stable until consumed. Input read/write
+positions are preserved.
+
+`DataBuffer.readableByteBuffers()` provides component views without joining or
+copying whole chunks. Its closeable iterator remains alive while the Provider
+borrows any view. Consumption, error and cancellation close that iterator before
+calling `DataBufferUtils.release` once for the owned buffer. Active callbacks
+must return first. Cleanup releases the buffer even if iterator close fails,
+and closed owners detach both references. Pooled and CloseableDataBuffer cleanup
+use Spring's own release utility; ordinary buffers require no explicit release.
+
+Output uses bounded segments allocated by the supplied thread-safe
+DataBufferFactory. Emission transfers ownership downstream, for example to
+`ServerHttpResponse.writeWith`. The adapter releases unpublished buffers on
+error/cancellation; downstream owns consumed buffers and additional queues or
+discards it introduces. Native encoding and generator-to-segment copying remain:
+avoiding whole-input copies/intermediate output arrays is not an end-to-end
+zero-copy or throughput guarantee.
+
+Reactor is an optional compile dependency: DataBuffer streaming callers add
+`json-facade-reactor`, while ordinary Spring mapper/global configuration can load
+without Boot, Reactor or Netty. Spring reactive HTTP integration and Netty are
+test dependencies only. This explicit adapter does not replace HTTP codecs or change global
+registration. The existing Reactor transport SPI owns framing and resource
+coordination, with no Provider parser forks, extra pools or background resources.
+
+Tests cover real Provider conversion, Default/Netty factories, component/UTF8
+boundaries, indices, demand, iterator lifetime, native-callback cancellation,
+discard and actual HTTP request-body/response-write composition. The standalone
+`scripts/run-databuffer-stress.py` covers generated large input/output and
+structured-document copying under 128 MiB heap/32 MiB direct memory. Its
+`--release-only` mode retains 192 closed owners after 1 MiB allocations per owner,
+without explicit GC, checking that their former storage can be reclaimed/reused.
+
+Java 17/21 quality gates pass 168 tests with zero failures, errors or skips;
+Checkstyle and SpotBugs report no issues. On each JDK, the DataBuffer matrix
+passes 32 documents of at least 1 GiB, 64 small-chunk cases and eight retained
+closed-owner forks. Pooled factories finish with zero pinned bytes. The existing
+[PR](https://github.com/jetlinks/json-facade/pull/1) records the validation scope;
+unchanged Provider/Reactor/Netty large-document evidence is reused.
+
 ## Netty buffers and ownership
 
 The optional `json-facade-netty` module targets Netty 4.1 buffers and
@@ -243,7 +298,7 @@ The stress harness lazily generates source bytes, requests one record/chunk at a
 
 `ResourceReleaseStress` retains 64 closed owners per fork while their former buffers exceed a 64 MiB heap or 32 MiB direct-memory limit. Both engines and the adapted Jackson 2 configuration cover heap/direct input sessions, standalone readers/writers, malformed input, failing output flush and discarded segmented queues. The fixture uses allocation pressure and reachability fences, without explicit GC or private-field inspection. It verifies bounded retention even when callers keep a closed facade reachable.
 
-Java 17 and 21 each pass the full 129-test quality gate. Spring tests cover actual Boot auto-configuration/customization, native post-processing, early business initialization, unique/primary selection, host override, opt-out, startup failure, prototype rejection, circular dependency and ClassLoader-lifetime behavior. A separate process verifies plain Spring without any Boot artifact. Native snapshot tests cover inclusion filters, modules/mixins, independent source configuration, limits, neutral trees and IO ownership. Shared-instance regressions retain concurrent publication, failure/reentry, explicit defaults and named isolation coverage.
+The quality gate targets Java 17 and 21. Spring tests cover actual Boot auto-configuration/customization, native post-processing, early business initialization, unique/primary selection, host override, opt-out, startup failure, prototype rejection, circular dependency and ClassLoader-lifetime behavior. A separate process verifies plain Spring without Boot, Reactor or Netty. DataBuffer tests additionally cover both Providers, buffer/iterator ownership, callback cancellation and actual HTTP streaming. Native snapshot tests cover inclusion filters, modules/mixins, independent source configuration, limits, neutral trees and IO ownership. Shared-instance regressions retain concurrent publication, failure/reentry, explicit defaults and named isolation coverage.
 
 The adapted Jackson 2 path passes all six modes with at least 1 GiB per document under a 128 MiB heap, plus all eight closed-resource forks, on Java 17 and 21. Its 64 B/64 KiB chunk-boundary matrix also passes with 16 MiB documents. Prior validation of unchanged ordinary Provider streaming/resource paths covers both engines, all six GiB modes with 128/256 MiB heaps, and the same input chunk boundaries. Historical JFR recordings of 1 GiB array output and structured document copying under a 128 MiB heap show approximately 3.8–6.6 MiB live after GC. The linked PR records source versions, measured allocation comparisons and delivery evidence; these historical measurements do not assert throughput for Spring applications.
 

@@ -17,6 +17,7 @@
 - [10. Reactor 流式读取](#read-stream)
 - [11. Reactor 分块写出](#write-stream)
   - [Netty ByteBuf 支持](#netty)
+  - [Spring DataBuffer 支持](#databuffer)
 - [12. 复杂结构的事件流](#events)
 - [13. 手动增量解析会话](#session)
 - [14. 资源、线程与内存所有权](#ownership)
@@ -42,6 +43,7 @@
 | 保留全部层级，复制或生成超大复杂文档 | `readEvents/writeEvents` | 一个 token 或 `value` 事件 |
 | 自有事件循环，不引入 Reactor | `readSession/eventSession` | 一个结果 |
 | Netty 池化输入输出 | `NettyJsonStreamMapper` | 当前输入租约、token/绑定值和输出段 |
+| Spring 请求体、响应体和其他 DataBuffer 流 | `DataBufferJsonStreamMapper` | 当前输入租约、token/绑定值和输出段 |
 
 流式处理能够避免收集整个聚合文档。单个 POJO、字符串或数字仍须在对应操作中完整处理；例如 1 GiB 的记录数组可以逐条处理，一个 1 GiB 的字符串不能靠切输入块变成小 token。
 
@@ -735,6 +737,54 @@ Pointer selection 和绑定策略与普通 Reactor 入口一致。网络协议�
 池化内存的 reserved 大小与仍被引用的 pinned 大小不同；小记录、heap/direct 和
 真实网络栈的收益应分别测量。
 
+<a id="databuffer"></a>
+### 11.2 Spring DataBuffer 支持
+
+使用 `json-facade-spring` 和 `json-facade-reactor`，通过
+`DataBufferJsonStreamMapper` 直接处理 `Publisher<DataBuffer>`。Reactor 是 Spring
+模块的可选依赖，因此调用方需要显式添加 `json-facade-reactor`；仅使用 Spring
+默认 mapper/global 接入时不需要 Reactor 或 Netty。
+
+下面的方法体用于 Spring `ServerHttpRequest request`、`ServerHttpResponse response`
+所在的响应式处理器，返回值交给框架订阅：
+
+```java
+import org.jetlinks.json.spring.DataBufferJsonStreamMapper;
+
+DataBufferJsonStreamMapper streams = DataBufferJsonStreamMapper.of(
+    Json.global(), response.bufferFactory());
+Flux<Item> items = streams.read(request.getBody(), JsonType.of(Item.class),
+    JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
+return response.writeWith(streams.write(items,
+    JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY)));
+```
+
+工厂由宿主提供，可用 `DefaultDataBufferFactory` 的 heap/direct 存储或
+`NettyDataBufferFactory` 的池化存储；适配器的运行时不依赖 Netty，也可传入显式
+构建或命名配置的 mapper。这里手动组合请求/响应数据，不改变框架默认 JSON codec。
+
+`read/readEvents` **接管每个已交付 DataBuffer 的释放责任，不额外 retain**，可直接
+接入 Spring 的 `request.getBody()`。上游负责未交付缓冲和自身队列；消费者不要重复
+释放已转交的引用。调用方保留额外池化引用时，应先 retain，并自行释放那一个引用。
+所有共享字节和组件在消费结束前须保持稳定。输入 read/write position 保持不变。
+
+输入通过 `readableByteBuffers()` 顺序提供组件视图，迭代器保持打开，直到 Provider
+消费完或完成异常/取消清理，然后先关闭迭代器，再通过 `DataBufferUtils.release`
+释放输入。正在执行的原生或自定义绑定回调返回后才会清理，支持池化及
+`CloseableDataBuffer`。不要先关闭迭代器再把其中的 ByteBuffer 交给异步解析。
+
+`write/writeEvents` 按输出 chunk 预算从工厂分配独立的有界分段；发出的 buffer 由
+下游接管，`response.writeWith(...)` 负责发送后的释放。适配器释放未发布的分段。
+下游另加 `publishOn` 等队列时，在相应操作符之后配置
+`.doOnDiscard(DataBuffer.class, DataBufferUtils::release)`，并负责自己消费的 buffer。
+任意删除 JSON 字节分段会破坏文档完整性。
+
+数组、NDJSON、根值序列、Pointer selection 与结构事件使用已有 options。例如复制
+超大复杂文档可组合 `streams.writeEvents(streams.readEvents(request.getBody()), options)`，
+其中 options 使用 `SINGLE_VALUE`。输入 DataBuffer 和输出分段都不是 JSON 文档边界。
+这里避免整块输入复制和中间输出数组，原生 token/POJO 分配及编码缓冲到输出段的复制
+仍然存在，吞吐收益需结合实际负载测量。
+
 <a id="events"></a>
 ## 12. 复杂结构的事件流
 
@@ -853,7 +903,8 @@ VALUE 可携带 Java null，不能据此判断 EOF。只有真实输入结束才
 | 输出 `byte[]` / `ByteBuffer` | 库拥有独立存储并转交下游，不再复用；ByteBuffer 只读且 cursor 独立，无 release |
 | Netty 输入 ByteBuf | `read` 借用并 retain；`readOwned` 消费一个转移引用；解析终止后释放适配器拥有的引用 |
 | Netty 输出 ByteBuf | 发出时转移一个引用；下游负责使用后的 release 以及自己队列/过滤的 discard |
-| Spring DataBuffer | 普通 ByteBuffer 入口不推断 retain/release；宿主负责转换与生命周期 |
+| Spring 输入 DataBuffer | `DataBufferJsonStreamMapper.read/readEvents` 接管一个输入所有权，组件迭代器关闭后释放 |
+| Spring 输出 DataBuffer | 发布后下游接管；`response.writeWith` 或消费方负责释放及自己队列的 discard |
 
 如果在进入 `readBuffers` 前使用 `publishOn` 等异步边界，宿主必须保证队列中的原始内存一直有效到适配器实际收到它；立即复制不能保护尚未到达适配器的字节。直接构造只读 view 也不能隔离可复用的底层内存。
 
@@ -910,6 +961,8 @@ python3 scripts/run-streaming-benchmarks.py
 # Netty：两种 Provider，heap/direct，每文档至少 1 GiB；128 MiB 堆/32 MiB direct。
 python3 scripts/run-netty-stress.py
 python3 scripts/run-netty-stress.py --release-only
+python3 scripts/run-databuffer-stress.py
+python3 scripts/run-databuffer-stress.py --release-only
 python3 scripts/run-streaming-benchmarks.py --netty
 ```
 
@@ -1026,6 +1079,7 @@ try {
 | [JsonEvent](../json-facade-api/src/main/java/org/jetlinks/json/JsonEvent.java) | 不可变结构事件和有界 Java 值 |
 | [JsonStreamMapper](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/JsonStreamMapper.java) | 字节/ByteBuffer 读写和结构事件；`readChunks/readChunkEvents/writeChunks/writeEventChunks` 用于 transport SPI |
 | [NettyJsonStreamMapper](../json-facade-netty/src/main/java/org/jetlinks/json/netty/NettyJsonStreamMapper.java) | `of(mapper, allocator)`；`read/readOwned/readEvents/readOwnedEvents`；`write/writeEvents` |
+| [DataBufferJsonStreamMapper](../json-facade-spring/src/main/java/org/jetlinks/json/spring/DataBufferJsonStreamMapper.java) | `of(mapper, factory)`；输入接管的 `read/readEvents`；输出转移的 `write/writeEvents` |
 | [Reactor transport SPI](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/spi) | `JsonInputChunk` 输入租约、`JsonBufferAllocator<B>` 输出分配与转移 |
 | [SPI 包](../json-facade-api/src/main/java/org/jetlinks/json/spi) | `JsonProvider`、`JsonConfiguration`、`JsonModule`、`JsonModuleContext`、`JsonAdapter`、`JsonNativeConfiguration` |
 | [JsonException](../json-facade-api/src/main/java/org/jetlinks/json/JsonException.java) | 统一类别与原生 cause |

@@ -26,6 +26,10 @@ jobs:
         run: |
           python3 scripts/run-netty-stress.py --mib 8 --chunks 64 8192 > target/netty-streaming.jsonl
           python3 scripts/run-netty-stress.py --release-only > target/netty-release.jsonl
+      - name: Spring DataBuffer streaming and closed-owner regression
+        run: |
+          python3 scripts/run-databuffer-stress.py --mib 8 --chunks 64 8192 > target/databuffer-streaming.jsonl
+          python3 scripts/run-databuffer-stress.py --release-only > target/databuffer-release.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -40,3 +44,5 @@ jobs:
             target/resource-release.jsonl
             target/netty-streaming.jsonl
             target/netty-release.jsonl
+            target/databuffer-streaming.jsonl
+            target/databuffer-release.jsonl

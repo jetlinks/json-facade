@@ -18,10 +18,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlainSpringClasspathTest {
     @Test
-    void plainConfigurationLoadsWithoutAnyBootArtifactOnTheClasspath() throws Exception {
+    void plainConfigurationLoadsWithoutBootReactorOrNettyOnTheClasspath() throws Exception {
         String classpath = Arrays.stream(System.getProperty("surefire.test.class.path").split(
                         Pattern.quote(File.pathSeparator)))
-                .filter(entry -> !Path.of(entry).getFileName().toString().startsWith("spring-boot"))
+                .filter(PlainSpringClasspathTest::plainDependency)
                 .collect(Collectors.joining(File.pathSeparator));
         Path log = Files.createTempFile("plain-spring-", ".log");
         Process process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
@@ -36,9 +36,18 @@ class PlainSpringClasspathTest {
         }
     }
 
+    private static boolean plainDependency(String entry) {
+        String name = Path.of(entry).getFileName().toString();
+        return !name.startsWith("spring-boot") && !name.startsWith("reactor-")
+                && !name.startsWith("reactive-streams") && !name.startsWith("netty-")
+                && !entry.contains("json-facade-reactor") && !entry.contains("json-facade-netty");
+    }
+
     public static void main(String[] args) {
         assertThrows(ClassNotFoundException.class,
                 () -> Class.forName("org.springframework.boot.autoconfigure.AutoConfiguration"));
+        assertThrows(ClassNotFoundException.class, () -> Class.forName("reactor.core.publisher.Flux"));
+        assertThrows(ClassNotFoundException.class, () -> Class.forName("io.netty.buffer.ByteBuf"));
         try (var context = SpringContexts.context(true)) {
             context.registerBean(ObjectMapper.class, () -> new ObjectMapper());
             context.register(JsonFacadeConfiguration.class);
