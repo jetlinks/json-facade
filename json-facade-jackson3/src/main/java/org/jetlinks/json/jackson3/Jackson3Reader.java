@@ -8,7 +8,7 @@ import org.jetlinks.json.JsonType;
 
 /** Borrowable cursor used both for standalone reads and nested custom adapter calls. */
 final class Jackson3Reader implements JsonReader {
-    private final JsonParser parser;
+    private JsonParser parser;
 
     Jackson3Reader(JsonParser parser) {
         this.parser = parser;
@@ -16,36 +16,50 @@ final class Jackson3Reader implements JsonReader {
 
     @Override
     public JsonToken next() {
-        return Jackson3Support.call(() -> token(parser.nextToken()));
+        return Jackson3Support.call(() -> token(parser().nextToken()));
     }
 
     @Override
     public JsonToken current() {
-        return token(parser.currentToken());
+        return token(parser().currentToken());
     }
 
     @Override
     public String text() {
-        return Jackson3Support.call(parser::getString);
+        return Jackson3Support.call(parser()::getString);
     }
 
     @Override
     public <T> T readValue(JsonType<T> type) {
-        return Jackson3Support.call(() -> parser.objectReadContext().readValue(parser,
-                new NativeType<T>(type.type())));
+        return Jackson3Support.call(() -> {
+            JsonParser input = parser();
+            return input.objectReadContext().readValue(input, new NativeType<T>(type.type()));
+        });
     }
 
     @Override
     public void skipValue() {
-        Jackson3Support.call(parser::skipChildren);
+        Jackson3Support.call(parser()::skipChildren);
     }
 
     @Override
     public void close() {
-        Jackson3Support.call(() -> {
-            parser.close();
-            return null;
-        });
+        // A retained closed cursor must not retain its caller's source or native buffers.
+        JsonParser owned = parser;
+        parser = null;
+        if (owned != null) {
+            Jackson3Support.call(() -> {
+                owned.close();
+                return null;
+            });
+        }
+    }
+
+    private JsonParser parser() {
+        if (parser == null) {
+            throw new IllegalStateException("JSON reader is closed");
+        }
+        return parser;
     }
 
     static JsonToken token(tools.jackson.core.JsonToken token) {

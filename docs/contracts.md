@@ -18,7 +18,7 @@ Options define lossless untyped decimal binding, unknown properties, duplicate k
 
 `NULL` and `MISSING` are distinct non-null sentinel nodes. `get`/`at` return MISSING for absent locations; RFC 6901 pointers support escaped `/` and `~`. Array indices use canonical decimal notation. `asObject`/`asArray` reject other shapes. `toJavaValue` exports an independent Map/List snapshot; `deepCopy` returns an independent tree. Cross-Provider nodes obey the same logical-value contract. Provider binding can synchronously borrow its own JDK tree without making an export snapshot, but cannot expose or retain that backing graph. Trees are not thread-safe.
 
-Reader `readValue`/`skipValue` consume the whole current value. Its next `next()` returns the successor token. Readers/writers/sessions are operation-local and not thread-safe. Their close methods release internal state and do not close caller sources/targets. Writer close does not repair incomplete containers. UTF-8 is the byte encoding; character sources/targets keep their character semantics.
+Reader `readValue`/`skipValue` consume the whole current value. Its next `next()` returns the successor token. Readers/writers/sessions are operation-local and not thread-safe. Their close methods release internal state and do not close caller sources/targets. Closed wrappers must also detach native cursors, binding contexts and borrowed input/output references, including when native cleanup fails; retaining a closed wrapper must not retain its former buffers or target. Reactor resources detach their owned session/writer, and discarded segmented output releases its queue storage. Writer close does not repair incomplete containers. UTF-8 is the byte encoding; character sources/targets keep their character semantics.
 
 ## Incremental reads
 
@@ -53,13 +53,15 @@ writeBytes/writeBuffers use ARRAY, LF-delimited NDJSON/ROOT_VALUES, or exactly o
 
 Total document size, current input chunk, token size, depth, current bound value and pending output segments are separate budgets. A 1 GiB array of bounded records or event-based document can run in a much smaller heap. Whole-value binding of a 1 GiB POJO would still materialize that value; callers should stream its structure instead. Individual enormous strings/numbers remain constrained tokens. The library does not suspend or replay an arbitrary native serializer at a byte boundary.
 
+With duplicate-key rejection enabled, the native detector also retains the names already seen in each open object. A huge object with many distinct fields can therefore require substantial memory even in event mode; token/depth limits do not bound its field count. Arrays of bounded objects avoid retaining one document-wide field-name set.
+
 The library owns no background threads, global live queues or long-lived sessions, so it adds no MBean or per-record tracing. The host retains its observation context and business-level tracing.
 
 ## Implementation and validation
 
 Framing and selection live in `json-facade-api/src/main/java/org/jetlinks/json/internal/AbstractReadSession.java`; each Provider's `Jackson2Session` / `Jackson3Session` owns native token buffering and binding. Internal token metadata is session-local and reused; public events remain immutable and independently retainable. Native session/writer hot paths call the engine directly and share exception classification through each Provider's support class. `JsonMapper.compactWriter` selects operation-local output configuration and suppresses implicit root separators. Provider tree serializers live separately from exact-class user adapters, so tree-interface inheritance does not widen user adapter matching. `OperationResource` owns serial operation/cancellation cleanup; `ReadSessionResource` and `WriteSessionResource` release native state exactly once. Each resource reuses a drain publisher across sequential chunks/records/events; every inner subscription has independent demand and completion state. `concatMap` with zero prefetch preserves serial advancement, and deferred start/EOF/finish operations preserve subscription timing. `SegmentedJsonOutput` owns byte budgets and segment transfer; `DocumentState` validates structural output.
 
-`mvn -o -B -ntp verify` runs warning-as-error compilation, Checkstyle, SpotBugs, both real-engine TCKs, Reactor tests and the aggregate coverage gate. Production modules each require at least 80% branch coverage. CI uses Java 17/21 and the smaller bounded-heap stress matrix.
+`mvn -o -B -ntp verify` runs warning-as-error compilation, Checkstyle, SpotBugs, both real-engine TCKs, Reactor tests and the aggregate coverage gate. Production modules each require at least 80% branch coverage. CI uses Java 17/21, the smaller bounded-heap streaming matrix and a separate closed-resource regression.
 
 Reproducible opt-in measurements (after the build):
 
@@ -68,6 +70,8 @@ Reproducible opt-in measurements (after the build):
 python3 scripts/run-streaming-stress.py
 # Chunk-boundary/slow-demand coverage with smaller logical documents.
 python3 scripts/run-streaming-stress.py --mib 16 --heaps 128 --chunks 64 65536
+# Retain closed wrappers; their former buffers exceed the 64 MiB heap / 32 MiB direct-memory limits.
+python3 scripts/run-resource-release-stress.py
 # Optional allocation/GC recording, kept outside ordinary CI.
 python3 scripts/run-streaming-stress.py --heaps 128 --modes array-write document-copy --jfr-dir target/streaming-jfr
 # JMH throughput and cumulative allocations; optional JMH dependencies resolved by Maven.
@@ -75,6 +79,8 @@ python3 scripts/run-streaming-benchmarks.py
 ```
 
 The stress harness lazily generates source bytes, requests one record/chunk at a time and validates input records without collecting them. Output is independently checked with a native nonblocking parser, including trailing metadata. It reports bytes, records, elapsed time, first-signal latency, cumulative thread allocation, GC time, current heap and the sum of heap-pool peaks. Pool peaks need not occur simultaneously and are not a precise process RSS measurement. JMH uses separate forks and GC profiling; its microbenchmarks do not imply production/network throughput.
+
+`ResourceReleaseStress` retains 64 closed owners per fork while their former buffers exceed a 64 MiB heap or 32 MiB direct-memory limit. Both engines cover heap/direct input sessions, standalone readers/writers, malformed input, failing output flush and discarded segmented queues. The fixture uses allocation pressure and reachability fences, without explicit GC or private-field inspection. It verifies bounded retention even when callers keep a closed facade reachable.
 
 Validation covers both engines in all six stress modes with at least 1 GiB per document and 128/256 MiB maximum heaps, plus 16 MiB documents split into 64 B/64 KiB chunks. Java 17 and 21 each pass the full 94-test quality gate. JFR recordings of 1 GiB array output and structured document copying under a 128 MiB maximum heap show approximately 3.8–6.6 MiB live after GC. The linked PR records the measured allocation comparison and delivery evidence.
 

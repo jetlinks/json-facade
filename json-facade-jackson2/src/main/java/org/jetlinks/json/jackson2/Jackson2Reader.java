@@ -9,7 +9,7 @@ import org.jetlinks.json.JsonType;
 
 /** Borrowable cursor used both for standalone reads and nested custom adapter calls. */
 final class Jackson2Reader implements JsonReader {
-    private final JsonParser parser;
+    private JsonParser parser;
 
     Jackson2Reader(JsonParser parser) {
         this.parser = parser;
@@ -17,39 +17,52 @@ final class Jackson2Reader implements JsonReader {
 
     @Override
     public JsonToken next() {
-        return Jackson2Support.call(() -> token(parser.nextToken()));
+        return Jackson2Support.call(() -> token(parser().nextToken()));
     }
 
     @Override
     public JsonToken current() {
-        return token(parser.currentToken());
+        return token(parser().currentToken());
     }
 
     @Override
     public String text() {
-        return Jackson2Support.call(parser::getText);
+        return Jackson2Support.call(parser()::getText);
     }
 
     @Override
     public <T> T readValue(JsonType<T> type) {
         return Jackson2Support.call(() -> {
-            ObjectMapper mapper = (ObjectMapper) parser.getCodec();
+            JsonParser input = parser();
+            ObjectMapper mapper = (ObjectMapper) input.getCodec();
             return mapper.readerFor(mapper.constructType(type.type()))
-                    .without(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readValue(parser);
+                    .without(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readValue(input);
         });
     }
 
     @Override
     public void skipValue() {
-        Jackson2Support.call(parser::skipChildren);
+        Jackson2Support.call(parser()::skipChildren);
     }
 
     @Override
     public void close() {
-        Jackson2Support.call(() -> {
-            parser.close();
-            return null;
-        });
+        // A retained closed cursor must not retain its caller's source or native buffers.
+        JsonParser owned = parser;
+        parser = null;
+        if (owned != null) {
+            Jackson2Support.call(() -> {
+                owned.close();
+                return null;
+            });
+        }
+    }
+
+    private JsonParser parser() {
+        if (parser == null) {
+            throw new IllegalStateException("JSON reader is closed");
+        }
+        return parser;
     }
 
     static JsonToken token(com.fasterxml.jackson.core.JsonToken token) {

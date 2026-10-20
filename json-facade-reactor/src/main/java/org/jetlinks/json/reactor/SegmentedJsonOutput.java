@@ -13,7 +13,7 @@ final class SegmentedJsonOutput extends OutputStream {
     private final int chunkSize;
     private final int limit;
     private final BooleanSupplier cancelled;
-    private final Deque<byte[]> ready = new ArrayDeque<>();
+    private Deque<byte[]> ready = new ArrayDeque<>();
     private byte[] current;
     private int used;
     private long count;
@@ -104,13 +104,14 @@ final class SegmentedJsonOutput extends OutputStream {
     }
 
     byte[] poll() {
-        return ready.pollFirst();
+        return ready == null ? null : ready.pollFirst();
     }
 
     void discard() {
         discarded = true;
         current = null;
         used = 0;
-        ready.clear();
+        // ArrayDeque.clear() retains its potentially large backing array.
+        ready = null;
     }
 }

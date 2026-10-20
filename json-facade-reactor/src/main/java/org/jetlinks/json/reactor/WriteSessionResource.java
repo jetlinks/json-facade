@@ -12,8 +12,8 @@ import reactor.core.publisher.SynchronousSink;
 final class WriteSessionResource extends OperationResource {
     private final JsonWriteOptions.Format format;
     private final SegmentedJsonOutput output;
-    private final JsonWriter writer;
-    private final DocumentState document;
+    private JsonWriter writer;
+    private DocumentState document;
     // Only one concatMap inner subscribes at a time; queued bytes stay in the owned output.
     private final Flux<byte[]> drain = Flux.generate(this::emit);
     private long records;
@@ -127,6 +127,9 @@ final class WriteSessionResource extends OperationResource {
     protected void closeOwned() {
         // Closing a failed/cancelled generator may flush bytes, but must not publish or retain them.
         output.discard();
-        writer.close();
+        JsonWriter owned = writer;
+        writer = null;
+        document = null;
+        owned.close();
     }
 }

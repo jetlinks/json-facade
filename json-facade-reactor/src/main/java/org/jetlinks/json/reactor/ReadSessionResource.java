@@ -12,7 +12,7 @@ import reactor.core.publisher.SynchronousSink;
  * waiting; an active owner performs the single cleanup when it releases the operation.
  */
 final class ReadSessionResource<T> extends OperationResource {
-    private final JsonReadSession<T> session;
+    private JsonReadSession<T> session;
     private final BooleanSupplier cancellation = this::cancelled;
     private final JsonReadOptions.NullPolicy nullPolicy;
     // concatMap serializes drain subscriptions. Reuse the publisher, never its subscription/demand.
@@ -85,6 +85,8 @@ final class ReadSessionResource<T> extends OperationResource {
 
     @Override
     protected void closeOwned() {
-        session.close();
+        JsonReadSession<T> owned = session;
+        session = null;
+        owned.close();
     }
 }

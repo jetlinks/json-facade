@@ -355,6 +355,7 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
             closed = true;
             recording = false;
             frames.clear();
+            currentEvent.name = null;
             closeParser();
         }
     }

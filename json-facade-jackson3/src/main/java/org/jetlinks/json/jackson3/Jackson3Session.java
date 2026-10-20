@@ -16,9 +16,9 @@ import org.jetlinks.json.internal.AbstractReadSession;
 
 /** Jackson async tokenizer and record-local native binding; shared code owns framing and selection. */
 final class Jackson3Session<T> extends AbstractReadSession<T> {
-    private final JsonParser parser;
-    private final ByteBufferFeeder feeder;
-    private final ObjectReader reader;
+    private JsonParser parser;
+    private ByteBufferFeeder feeder;
+    private ObjectReader reader;
     private TokenBuffer record;
     private boolean exhausted;
 
@@ -124,10 +124,16 @@ final class Jackson3Session<T> extends AbstractReadSession<T> {
 
     @Override
     protected void closeParser() {
-        try (parser) {
-            if (record != null) {
-                record.close();
-                record = null;
+        // Native close can retain its last ByteBuffer; detach even if cleanup throws.
+        JsonParser owned = parser;
+        TokenBuffer pending = record;
+        parser = null;
+        feeder = null;
+        reader = null;
+        record = null;
+        try (owned) {
+            if (pending != null) {
+                pending.close();
             }
         } catch (RuntimeException error) {
             throw Jackson3Support.failure(error);

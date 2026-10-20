@@ -10,9 +10,9 @@ import org.jetlinks.json.JsonWriter;
 
 /** Thin generator cursor; caller ownership and no auto-completion are configured by the provider. */
 final class Jackson2Writer implements JsonWriter {
-    private final JsonGenerator generator;
-    private final ObjectWriter valueWriter;
-    private final SerializerProvider context;
+    private JsonGenerator generator;
+    private ObjectWriter valueWriter;
+    private SerializerProvider context;
 
     Jackson2Writer(JsonGenerator generator, SerializerProvider context) {
         this.generator = generator;
@@ -29,7 +29,7 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void beginObject() {
         try {
-            generator.writeStartObject();
+            generator().writeStartObject();
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -38,7 +38,7 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void endObject() {
         try {
-            generator.writeEndObject();
+            generator().writeEndObject();
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -47,7 +47,7 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void beginArray() {
         try {
-            generator.writeStartArray();
+            generator().writeStartArray();
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -56,7 +56,7 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void endArray() {
         try {
-            generator.writeEndArray();
+            generator().writeEndArray();
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -65,7 +65,7 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void name(String name) {
         try {
-            generator.writeFieldName(name);
+            generator().writeFieldName(name);
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -74,12 +74,13 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void value(Object value) {
         try {
+            JsonGenerator output = generator();
             // Re-enter the current operation's context, not the codec's shared mapper configuration.
             if (valueWriter != null) {
                 // Reuse generator buffers, but bound each value in a fresh context: object IDs must not retain a stream.
-                valueWriter.writeValue(generator, JsonValues.bindingValue(value));
+                valueWriter.writeValue(output, JsonValues.bindingValue(value));
             } else {
-                java.util.Objects.requireNonNull(context).defaultSerializeValue(JsonValues.bindingValue(value), generator);
+                java.util.Objects.requireNonNull(context).defaultSerializeValue(JsonValues.bindingValue(value), output);
             }
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
@@ -90,7 +91,7 @@ final class Jackson2Writer implements JsonWriter {
     public void number(String value) {
         JsonNumbers.validate(value);
         try {
-            generator.writeNumber(value);
+            generator().writeNumber(value);
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -100,7 +101,7 @@ final class Jackson2Writer implements JsonWriter {
     public void string(String value) {
         java.util.Objects.requireNonNull(value, "value");
         try {
-            generator.writeString(value);
+            generator().writeString(value);
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -109,7 +110,7 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void bool(boolean value) {
         try {
-            generator.writeBoolean(value);
+            generator().writeBoolean(value);
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -118,7 +119,7 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void nullValue() {
         try {
-            generator.writeNull();
+            generator().writeNull();
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -127,7 +128,7 @@ final class Jackson2Writer implements JsonWriter {
     @Override
     public void flush() {
         try {
-            generator.flush();
+            generator().flush();
         } catch (IOException | RuntimeException error) {
             throw Jackson2Support.failure(error);
         }
@@ -135,10 +136,24 @@ final class Jackson2Writer implements JsonWriter {
 
     @Override
     public void close() {
-        try {
-            generator.close();
-        } catch (IOException | RuntimeException error) {
-            throw Jackson2Support.failure(error);
+        // Detach before native close: a failing flush must not pin the target or binding context.
+        JsonGenerator owned = generator;
+        generator = null;
+        valueWriter = null;
+        context = null;
+        if (owned != null) {
+            try {
+                owned.close();
+            } catch (IOException | RuntimeException error) {
+                throw Jackson2Support.failure(error);
+            }
         }
+    }
+
+    private JsonGenerator generator() {
+        if (generator == null) {
+            throw new IllegalStateException("JSON writer is closed");
+        }
+        return generator;
     }
 }
