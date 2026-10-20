@@ -1,5 +1,7 @@
 # Public contracts
 
+For installation, configuration and end-to-end usage examples, see the [Chinese user guide](user-guide.md).
+
 ## Boundary and configuration
 
 The facade handles explicit JSON calls in programs: binding, conversion, tree manipulation, cursor operations and manually composed byte streams. HTTP request/response codecs, WebClient, SSE and ORM integrations use their official configuration. The library has no Spring/Netty dependency or auto-configuration. Pooled buffers are converted and released by their existing host owner.

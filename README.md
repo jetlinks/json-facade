@@ -4,6 +4,8 @@ A small facade for **manual JSON operations**. Application code depends on neutr
 
 Requires Java 17+. Current development version: `1.0.0-SNAPSHOT` (not yet published to Maven Central).
 
+Documentation: [完整中文使用手册](docs/user-guide.md) · [Public contracts](docs/contracts.md).
+
 ## Modules
 
 | Artifact | Responsibility | Runtime dependencies |
