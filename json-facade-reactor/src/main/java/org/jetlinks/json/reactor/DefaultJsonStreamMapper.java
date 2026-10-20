@@ -1,8 +1,9 @@
 package org.jetlinks.json.reactor;
 
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 import java.util.Objects;
+import java.util.function.Supplier;
+import org.jetlinks.json.JsonEvent;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonReadOptions;
@@ -43,7 +44,12 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
     private <T> Flux<T> read(Flux<ByteBuffer> input, JsonType<T> type, JsonReadOptions options) {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(options, "options");
-        return Flux.using(() -> new ReadSessionResource<>(mapper.readSession(type, options)), session ->
+        return read(input, () -> mapper.readSession(type, options), options);
+    }
+
+    private static <T> Flux<T> read(Flux<ByteBuffer> input, Supplier<JsonReadSession<T>> factory,
+                                    JsonReadOptions options) {
+        return Flux.using(() -> new ReadSessionResource<>(factory.get()), session ->
                 input.concatMap(chunk -> {
                     session.feed(chunk);
                     return drain(session, options);
@@ -77,44 +83,60 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
     }
 
     @Override
+    public Flux<JsonEvent> readEvents(Publisher<byte[]> input) {
+        return read(Flux.from(input).map(ByteBuffer::wrap), mapper::eventSession,
+                JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE));
+    }
+
+    @Override
+    public Flux<JsonEvent> readBufferEvents(Publisher<? extends ByteBuffer> input) {
+        return read(Flux.from(input).map(DefaultJsonStreamMapper::copy), mapper::eventSession,
+                JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE));
+    }
+
+    @Override
     public Flux<byte[]> writeBytes(Publisher<?> values, JsonWriteOptions options) {
+        Objects.requireNonNull(values, "values");
         Objects.requireNonNull(options, "options");
+        return Flux.using(() -> new WriteSessionResource(mapper, options, false), session ->
+                Flux.concat(start(session),
+                        Flux.from(values).concatMap(value -> {
+                            session.encode(value);
+                            return drainOutput(session);
+                        }, 0), finish(session)), WriteSessionResource::close);
+    }
+
+    @Override
+    public Flux<byte[]> writeEvents(Publisher<? extends JsonEvent> events, JsonWriteOptions options) {
+        Objects.requireNonNull(events, "events");
+        Objects.requireNonNull(options, "options");
+        if (options.format() != JsonWriteOptions.Format.SINGLE_VALUE) {
+            throw new IllegalArgumentException("Structural events require SINGLE_VALUE output");
+        }
+        return Flux.using(() -> new WriteSessionResource(mapper, options, true), session ->
+                Flux.concat(start(session),
+                        Flux.from(events).concatMap(event -> {
+                            session.event(event);
+                            return drainOutput(session);
+                        }, 0), finish(session)), WriteSessionResource::close);
+    }
+
+    private static Flux<byte[]> start(WriteSessionResource session) {
         return Flux.defer(() -> {
-            WriteState state = new WriteState(options.format() == JsonWriteOptions.Format.ARRAY);
-            Flux<byte[]> records = Flux.from(values).concatMap(value -> encode(value, options, state), 0);
-            if (!state.array) {
-                return records;
-            }
-            return Flux.concat(Flux.just(new byte[]{'['}), records, Flux.just(new byte[]{']'}));
+            session.start();
+            return drainOutput(session);
         });
     }
 
-    private Flux<byte[]> encode(Object value, JsonWriteOptions options, WriteState state) {
+    private static Flux<byte[]> finish(WriteSessionResource session) {
         return Flux.defer(() -> {
-            int limit = Math.min(options.maxValueBytes(), mapper.options().maxValueBytes());
-            BoundedJsonOutput output = new BoundedJsonOutput(limit);
-            mapper.writeCompact(value, output);
-            byte[] record = output.bytes();
-            Flux<byte[]> chunks = chunks(record, options.chunkSize());
-            if (state.array) {
-                boolean first = state.first;
-                state.first = false;
-                return first ? chunks : Flux.concat(Flux.just(new byte[]{','}), chunks);
-            }
-            return chunks.concatWithValues(new byte[]{'\n'});
+            session.finish();
+            return drainOutput(session);
         });
     }
 
-    private static Flux<byte[]> chunks(byte[] bytes, int size) {
-        return Flux.generate(() -> 0, (offset, sink) -> {
-            if (offset == bytes.length) {
-                sink.complete();
-                return offset;
-            }
-            int end = (int) Math.min((long) bytes.length, (long) offset + size);
-            sink.next(Arrays.copyOfRange(bytes, offset, end));
-            return end;
-        });
+    private static Flux<byte[]> drainOutput(WriteSessionResource session) {
+        return Flux.generate(session::emit);
     }
 
     @Override
@@ -122,13 +144,8 @@ final class DefaultJsonStreamMapper implements JsonStreamMapper {
         return writeBytes(values, options).map(bytes -> ByteBuffer.wrap(bytes).asReadOnlyBuffer());
     }
 
-    private static final class WriteState {
-        private final boolean array;
-        private boolean first = true;
-
-        private WriteState(boolean array) {
-            this.array = array;
-        }
+    @Override
+    public Flux<ByteBuffer> writeEventBuffers(Publisher<? extends JsonEvent> events, JsonWriteOptions options) {
+        return writeEvents(events, options).map(bytes -> ByteBuffer.wrap(bytes).asReadOnlyBuffer());
     }
-
 }

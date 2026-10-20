@@ -22,6 +22,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JsonApiTest {
     @Test
+    void structuralEventsValidatePayloadsAndReuseImmutableConstants() {
+        for (JsonToken token : List.of(JsonToken.START_ARRAY, JsonToken.END_ARRAY,
+                JsonToken.START_OBJECT, JsonToken.END_OBJECT, JsonToken.NULL)) {
+            assertSame(JsonEvent.token(token, null), JsonEvent.token(token, null));
+            assertThrows(IllegalArgumentException.class, () -> JsonEvent.token(token, "text"));
+            assertThrows(IllegalArgumentException.class, () -> new JsonEvent.Token(token, "text"));
+        }
+        assertSame(JsonEvent.TRUE, JsonEvent.token(JsonToken.BOOLEAN, "true"));
+        assertSame(JsonEvent.FALSE, JsonEvent.token(JsonToken.BOOLEAN, "false"));
+        assertEquals(JsonEvent.name("x"), JsonEvent.token(JsonToken.FIELD_NAME, "x"));
+        assertEquals(JsonEvent.string("x"), JsonEvent.token(JsonToken.STRING, "x"));
+        assertEquals(JsonEvent.number("1"), JsonEvent.token(JsonToken.NUMBER, "1"));
+        assertThrows(IllegalArgumentException.class, () -> JsonEvent.token(JsonToken.BOOLEAN, "other"));
+        assertThrows(NullPointerException.class, () -> new JsonEvent.Token(JsonToken.STRING, null));
+        assertNull(JsonEvent.value(null).value());
+    }
+
+    @Test
     void typeTokensHaveValueSemanticsAndDoNotExposeArgumentArrays() {
         JsonType<Map<String, List<Integer>>> type = new JsonType<>() { };
         ParameterizedType expected = (ParameterizedType) type.type();

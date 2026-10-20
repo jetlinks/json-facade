@@ -6,8 +6,8 @@ import java.util.Objects;
  * @since 1.0.0
  */
 public record JsonWriteOptions(Format format, int chunkSize, int maxValueBytes) {
-    /** ARRAY brackets all records; the other formats delimit compact records with LF. */
-    public enum Format { ARRAY, NDJSON, ROOT_VALUES }
+    /** SINGLE_VALUE requires one value; ARRAY brackets records; NDJSON/ROOT_VALUES delimit with LF. */
+    public enum Format { SINGLE_VALUE, ARRAY, NDJSON, ROOT_VALUES }
 
     public JsonWriteOptions {
         Objects.requireNonNull(format, "format");

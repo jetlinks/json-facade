@@ -19,7 +19,10 @@ import tools.jackson.databind.module.SimpleModule;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
+import org.jetlinks.json.JsonArray;
+import org.jetlinks.json.JsonObject;
 import org.jetlinks.json.JsonValue;
+import org.jetlinks.json.internal.JsonValues;
 import org.jetlinks.json.spi.JsonAdapter;
 import org.jetlinks.json.spi.JsonConfiguration;
 import org.jetlinks.json.spi.JsonModuleContext;
@@ -40,6 +43,8 @@ public final class Jackson3Provider implements JsonProvider {
     public JsonMapper create(JsonConfiguration configuration) {
         JsonOptions options = configuration.options();
         JsonFactory factory = JsonFactory.builder()
+                .streamWriteConstraints(tools.jackson.core.StreamWriteConstraints.builder()
+                        .maxNestingDepth(options.maxDepth()).build())
                 .streamReadConstraints(StreamReadConstraints.builder()
                         .maxNestingDepth(options.maxDepth()).maxStringLength(options.maxStringLength())
                         .maxNumberLength(options.maxNumberLength()).build())
@@ -59,7 +64,9 @@ public final class Jackson3Provider implements JsonProvider {
                 options.omitNulls() ? JsonInclude.Include.NON_NULL : JsonInclude.Include.ALWAYS));
         SimpleModule module = new SimpleModule("json-facade");
         module.setSerializers(new ExactSerializers());
-        installTree(module);
+        SimpleModule treeModule = new SimpleModule("json-facade-tree");
+        installTree(treeModule);
+        builder.addModule(treeModule);
         JsonModuleContext context = new AdapterContext(module);
         configuration.modules().forEach(extension -> extension.configure(context));
         builder.addModule(module);
@@ -73,10 +80,22 @@ public final class Jackson3Provider implements JsonProvider {
     }
 
     private static void installTree(SimpleModule module) {
+        module.addDeserializer(JsonObject.class, new ValueDeserializer<>() {
+            @Override
+            public JsonObject deserialize(JsonParser input, DeserializationContext context) throws tools.jackson.core.JacksonException {
+                return JsonValue.of(context.readValue(input, Object.class)).asObject();
+            }
+        });
+        module.addDeserializer(JsonArray.class, new ValueDeserializer<>() {
+            @Override
+            public JsonArray deserialize(JsonParser input, DeserializationContext context) throws tools.jackson.core.JacksonException {
+                return JsonValue.of(context.readValue(input, Object.class)).asArray();
+            }
+        });
         module.addSerializer(JsonValue.class, new ValueSerializer<>() {
             @Override
             public void serialize(JsonValue value, JsonGenerator output, SerializationContext context) throws tools.jackson.core.JacksonException {
-                output.writePOJO(value.toJavaValue());
+                context.writeValue(output, JsonValues.bindingValue(value));
             }
         });
         module.addDeserializer(JsonValue.class, new ValueDeserializer<>() {
@@ -135,7 +154,7 @@ public final class Jackson3Provider implements JsonProvider {
 
         @Override
         public void serialize(T value, JsonGenerator output, SerializationContext context) {
-            adapter.write(value, new Jackson3Writer(output));
+            adapter.write(value, new Jackson3Writer(output, context));
         }
     }
 

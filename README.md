@@ -57,15 +57,42 @@ Read modes: `SINGLE_VALUE`, `ARRAY_ELEMENTS`, `NDJSON`, `ROOT_VALUES`. A JSON Po
 
 Byte arrays are owned immutable chunks after publication. ByteBuffer input is copied at the adapter's input `onNext`, preserving position/limit/mark; heap, direct, read-only and sliced buffers are supported. Source storage can be reused once that call returns. ByteBuffer outputs are read-only, have independent cursors, and require no release.
 
-The adapter honors demand, preserves Reactor Context, and uses no internal subscription, blocking I/O or forced Scheduler. Each subscription gets a fresh parser; cancelling closes it and cancels its source. Total memory includes the current source chunk, a bounded materialized record and the engine's constrained token buffers. A source must still supply reasonably sized chunks. Serialization buffers one bounded record, not the entire stream; arbitrary huge POJOs cannot pause serialization between output chunks.
+The adapter honors demand, preserves Reactor Context, and uses no internal subscription, blocking I/O or forced Scheduler. Each subscription gets a fresh parser; cancelling closes it and cancels its source. Total memory includes the current source chunk, a bounded materialized record and the engine's constrained token buffers. A source must still supply reasonably sized chunks. Serialization buffers owned segments for one bounded value, using a reusable native generator. Huge documents can stream their structure without a whole-document tree; each scalar/bound value remains constrained.
 
 Reactor cannot emit Java null. Null records fail by default, may be explicitly skipped, or can be retained as the non-null `JsonValue.NULL` node. Empty array output is `[]`; empty NDJSON output has zero bytes. An error never appends a successful closing bracket.
+
+## Trees and structured documents
+
+`JsonMapper.createObject()` / `createArray()` return the neutral `JsonObject` / `JsonArray` interfaces. Map/Collection initializers and mutations copy nested JSON containers; object keys are Strings. `toJavaValue()` exports an independent JDK snapshot. Use `toTree(bean)` for configured POJO mapping.
+
+For a document with metadata and a streamed array, compose structural events:
+
+```java
+import org.jetlinks.json.JsonEvent;
+import reactor.core.publisher.Flux;
+
+Flux<JsonEvent> document = Flux.<JsonEvent>concat(
+    Flux.just(JsonEvent.START_OBJECT,
+        JsonEvent.name("meta"), JsonEvent.value(java.util.Map.of("version", 1)),
+        JsonEvent.name("items"), JsonEvent.START_ARRAY),
+    items.map(JsonEvent::value),
+    Flux.just(JsonEvent.END_ARRAY,
+        JsonEvent.name("summary"), JsonEvent.value(java.util.Map.of("complete", true)),
+        JsonEvent.END_OBJECT));
+var documentBytes = streams.writeEvents(document,
+    JsonWriteOptions.of(JsonWriteOptions.Format.SINGLE_VALUE));
+var inputEvents = streams.readEvents(chunks);
+```
+
+Event reads preserve structure without collecting containers. Event writes validate balanced containers and field/value order; numeric tokens retain text without a double conversion. Both sides honor demand and cancellation. Root-array record APIs and Pointer selection remain the convenient typed path. A bound POJO is one finite write unit; enormous aggregate objects should be expressed through structural events.
 
 ## Extensions
 
 `JsonModule` registers exact-class `JsonAdapter<T>` instances through `JsonModuleContext`. Adapters read/write borrowed neutral cursors using the same binding context. Registrations are build-time only and must be thread-safe; duplicate module IDs or duplicate class adapters fail. Null values follow mapper policies rather than invoking adapters.
 
 `Jackson2Extension` and `Jackson3Extension` provide typed native builder callbacks for engine-specific modules/mixins. They belong in application assembly code, not ordinary JSON callers. The callback must not retain the builder or mutate a published mapper. Native annotations and native extensions are explicit remaining migration boundaries.
+
+Opt-in [large-document stress and allocation benchmarks](docs/contracts.md#implementation-and-validation) exercise both engines under bounded heaps.
 
 The engine SPI has only `JsonProvider.id()` and `create(JsonConfiguration)`. No Provider-specific reactive SPI or capability registry is required. [The contracts](docs/contracts.md) specify framing, ownership and extension behavior.
 

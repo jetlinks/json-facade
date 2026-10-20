@@ -2,7 +2,6 @@ package org.jetlinks.json.internal;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.function.BooleanSupplier;
@@ -15,14 +14,36 @@ import org.jetlinks.json.JsonToken;
  * Providers buffer and bind the current record's native tokens; no neutral tree round trip is needed.
  */
 public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
-    /** null token indicates a parser input boundary or genuine EOF, distinguished by exhausted. */
-    protected record Event(JsonToken token, String name, long start, long end, long line, long endLine) {
-        public Event {
-        }
+    /** Borrowed session-local token state, valid until nextEvent; never exposed to callers.
+     * A null token indicates an input boundary or genuine EOF, distinguished by exhausted.
+     */
+    protected static final class Event {
+        private JsonToken token;
+        private String name;
+        private long start;
+        private long end;
+        private long line;
+        private long endLine;
+    }
+
+    private final Event currentEvent = new Event();
+
+    /** Reuse token metadata rather than allocating an internal wrapper for every native token. */
+    protected final Event event(JsonToken token, String name, long start, long end, long line, long endLine) {
+        currentEvent.token = token;
+        currentEvent.name = name;
+        currentEvent.start = start;
+        currentEvent.end = end;
+        currentEvent.line = line;
+        currentEvent.endLine = endLine;
+        return currentEvent;
     }
 
     private final JsonReadOptions options;
     private final int maxValueBytes;
+    private final boolean events;
+    private final List<String> target;
+    private final long[] targetIndices;
     private final Deque<Frame> frames = new ArrayDeque<>();
     private boolean recording;
     private int depth;
@@ -38,8 +59,18 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     private boolean pendingCarriageReturn;
 
     protected AbstractReadSession(JsonReadOptions options, int maxValueBytes) {
+        this(options, maxValueBytes, false);
+    }
+
+    protected AbstractReadSession(JsonReadOptions options, int maxValueBytes, boolean events) {
         this.options = options;
         this.maxValueBytes = Math.min(options.maxValueBytes(), maxValueBytes);
+        this.events = events;
+        target = options.selection() == null ? List.of() : options.selection().pointer().segments();
+        targetIndices = new long[target.size()];
+        for (int i = 0; i < target.size(); i++) {
+            targetIndices[i] = arrayIndex(target.get(i));
+        }
     }
 
     protected abstract Event nextEvent();
@@ -54,6 +85,8 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     protected abstract void appendToken();
     /** Bind and release the completed native record with the configured engine reader. */
     protected abstract T bindRecord();
+    /** Emit one immutable public event without buffering its enclosing container. */
+    protected abstract T bindEvent(JsonToken token);
 
     /** Field names are needed only while resolving a configured pointer. */
     protected final boolean tracksPath() {
@@ -112,29 +145,51 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     @Override
     public final Result<T> read(BooleanSupplier cancelled) {
         ensureOpen();
+        // Dispatch once per read, keeping event-mode work out of the typed record token loop.
+        return events ? readEvents(cancelled) : readValues(cancelled);
+    }
+
+    private Result<T> readValues(BooleanSupplier cancelled) {
         while (!cancelled.getAsBoolean()) {
             Event event = nextEvent();
-            if (event.token() == null) {
+            if (event.token == null) {
                 return exhausted() ? finishDocument() : Result.needInput();
             }
-            int tokenDepth = advanceDepth(event.token());
+            int tokenDepth = advanceDepth(event.token);
             // Ordinary root/array reads need only depth; paths would allocate once per input value.
-            List<String> path = tracksPath() ? advancePath(event) : List.of();
+            int matched = tracksPath() ? advancePath(event) : -1;
             validateRoot(event, tokenDepth);
-            if (shouldStart(event, path, tokenDepth)) {
+            if (shouldStart(event, matched, tokenDepth)) {
                 startRecord();
                 recording = true;
                 recordDepth = tokenDepth;
-                recordStart = event.start();
-                recordLine = event.line();
+                recordStart = event.start;
+                recordLine = event.line;
             }
             if (recording) {
                 checkSize(event);
                 appendToken();
-                if (!isStart(event.token()) && depth == recordDepth) {
+                if (!isStart(event.token) && depth == recordDepth) {
                     return finishRecord(event);
                 }
             }
+        }
+        return Result.end();
+    }
+
+    private Result<T> readEvents(BooleanSupplier cancelled) {
+        while (!cancelled.getAsBoolean()) {
+            Event event = nextEvent();
+            if (event.token == null) {
+                return exhausted() ? finishDocument() : Result.needInput();
+            }
+            int tokenDepth = advanceDepth(event.token);
+            validateRoot(event, tokenDepth);
+            selected = true;
+            if (event.end - event.start + 1 > maxValueBytes) {
+                throw new JsonException(JsonException.Kind.LIMIT, "JSON token exceeds byte budget");
+            }
+            return Result.value(bindEvent(event.token));
         }
         return Result.end();
     }
@@ -150,20 +205,19 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
         return tokenDepth;
     }
 
-    private boolean shouldStart(Event event, List<String> path, int tokenDepth) {
-        if (recording || event.token() == JsonToken.FIELD_NAME || isEnd(event.token())) {
+    private boolean shouldStart(Event event, int matched, int tokenDepth) {
+        if (recording || event.token == JsonToken.FIELD_NAME || isEnd(event.token)) {
             return false;
         }
         JsonReadOptions.Selection selection = options.selection();
-        List<String> target = selection == null ? List.of() : selection.pointer().segments();
         boolean elements = selection == null
                 ? options.mode() == JsonReadOptions.Mode.ARRAY_ELEMENTS : selection.arrayElements();
-        if (selection == null ? tokenDepth == 0 : path.equals(target)) {
+        if (selection == null ? tokenDepth == 0 : matched == target.size()) {
             if (selected) {
                 throw error("Selected JSON path occurs more than once");
             }
             selected = true;
-            if (elements && event.token() != JsonToken.START_ARRAY) {
+            if (elements && event.token != JsonToken.START_ARRAY) {
                 throw error("Selected value must be an array");
             }
             return !elements;
@@ -171,12 +225,12 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
         if (selection == null) {
             return elements && tokenDepth == 1;
         }
-        return elements && path.size() == target.size() + 1 && path.subList(0, target.size()).equals(target);
+        return elements && matched == target.size() + 1;
     }
 
     private Result<T> finishRecord(Event event) {
         if (options.mode() == JsonReadOptions.Mode.NDJSON) {
-            if (recordLine != event.endLine() || recordLine == lastRecordLine) {
+            if (recordLine != event.endLine || recordLine == lastRecordLine) {
                 throw error("NDJSON requires one complete value per line");
             }
             lastRecordLine = recordLine;
@@ -186,7 +240,7 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     }
 
     private void checkSize(Event event) {
-        long size = event.end() - recordStart + 1;
+        long size = event.end - recordStart + 1;
         if (size > maxValueBytes) {
             throw new JsonException(JsonException.Kind.LIMIT, "JSON record exceeds byte budget");
         }
@@ -205,17 +259,17 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     }
 
     private void validateRoot(Event event, int tokenDepth) {
-        if (event.token() == JsonToken.FIELD_NAME) {
+        if (event.token == JsonToken.FIELD_NAME) {
             return;
         }
         if (tokenDepth == 0) {
-            if (!isEnd(event.token())) {
+            if (!isEnd(event.token)) {
                 roots++;
                 if (roots > 1 && (options.mode() == JsonReadOptions.Mode.SINGLE_VALUE
                         || options.mode() == JsonReadOptions.Mode.ARRAY_ELEMENTS)) {
                     throw error("Trailing root value");
                 }
-                if (roots > 1 && event.start() <= previousRootEnd + 1) {
+                if (roots > 1 && event.start <= previousRootEnd + 1) {
                     throw error("Root values must be separated by whitespace");
                 }
                 if (options.selection() == null
@@ -224,31 +278,57 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
                     selected = false;
                 }
             }
-            if (isEnd(event.token()) || !isStart(event.token())) {
-                previousRootEnd = event.end();
+            if (isEnd(event.token) || !isStart(event.token)) {
+                previousRootEnd = event.end;
             }
         }
     }
 
-    private List<String> advancePath(Event event) {
-        JsonToken token = event.token();
+    private int advancePath(Event event) {
+        JsonToken token = event.token;
         if (token == JsonToken.FIELD_NAME) {
-            frames.peek().field = event.name();
-            return frames.peek().path;
+            frames.peek().field = event.name;
+            return frames.peek().matched;
         }
         if (isEnd(token)) {
-            return frames.pop().path;
+            return frames.pop().matched;
         }
-        List<String> path = new ArrayList<>();
+        int matched = 0;
         if (!frames.isEmpty()) {
             Frame parent = frames.peek();
-            path.addAll(parent.path);
-            path.add(parent.array ? Integer.toString(parent.index++) : parent.field);
+            matched = matchChild(parent);
+            if (parent.array) {
+                parent.index++;
+            }
         }
         if (isStart(token)) {
-            frames.push(new Frame(path, token == JsonToken.START_ARRAY));
+            frames.push(new Frame(matched, token == JsonToken.START_ARRAY));
         }
-        return path;
+        return matched;
+    }
+
+    private int matchChild(Frame parent) {
+        int matched = parent.matched;
+        if (matched == target.size()) {
+            return matched + 1;
+        }
+        if (matched < 0 || matched > target.size()) {
+            return -1;
+        }
+        boolean matches = parent.array ? parent.index == targetIndices[matched]
+                : target.get(matched).equals(parent.field);
+        return matches ? matched + 1 : -1;
+    }
+
+    private static long arrayIndex(String segment) {
+        if (segment.matches("0|[1-9][0-9]*")) {
+            try {
+                return Long.parseLong(segment);
+            } catch (NumberFormatException ignored) {
+                return -1;
+            }
+        }
+        return -1;
     }
 
     private static boolean isStart(JsonToken token) {
@@ -280,13 +360,13 @@ public abstract class AbstractReadSession<T> implements JsonReadSession<T> {
     }
 
     private static final class Frame {
-        private final List<String> path;
+        private final int matched;
         private final boolean array;
         private String field;
-        private int index;
+        private long index;
 
-        private Frame(List<String> path, boolean array) {
-            this.path = List.copyOf(path);
+        private Frame(int matched, boolean array) {
+            this.matched = matched;
             this.array = array;
         }
     }

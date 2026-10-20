@@ -1,18 +1,28 @@
 package org.jetlinks.json.jackson2;
 
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.ObjectWriter;
 import com.fasterxml.jackson.databind.SerializerProvider;
-import org.jetlinks.json.JsonValue;
+import org.jetlinks.json.internal.JsonNumbers;
+import org.jetlinks.json.internal.JsonValues;
 import org.jetlinks.json.JsonWriter;
 
 /** Thin generator cursor; caller ownership and no auto-completion are configured by the provider. */
 final class Jackson2Writer implements JsonWriter {
     private final JsonGenerator generator;
+    private final ObjectWriter valueWriter;
     private final SerializerProvider context;
 
     Jackson2Writer(JsonGenerator generator, SerializerProvider context) {
         this.generator = generator;
         this.context = context;
+        valueWriter = null;
+    }
+
+    Jackson2Writer(JsonGenerator generator, ObjectWriter valueWriter) {
+        this.generator = generator;
+        this.valueWriter = valueWriter;
+        context = null;
     }
 
     @Override
@@ -59,7 +69,46 @@ final class Jackson2Writer implements JsonWriter {
     public void value(Object value) {
         Jackson2Support.call(() -> {
             // Re-enter the current operation's context, not the codec's shared mapper configuration.
-            context.defaultSerializeValue(value instanceof JsonValue node ? node.toJavaValue() : value, generator);
+            if (valueWriter != null) {
+                // Reuse generator buffers, but bound each value in a fresh context: object IDs must not retain a stream.
+                valueWriter.writeValue(generator, JsonValues.bindingValue(value));
+            } else {
+                java.util.Objects.requireNonNull(context).defaultSerializeValue(JsonValues.bindingValue(value), generator);
+            }
+            return null;
+        });
+    }
+
+    @Override
+    public void number(String value) {
+        JsonNumbers.validate(value);
+        Jackson2Support.call(() -> {
+            generator.writeNumber(value);
+            return null;
+        });
+    }
+
+    @Override
+    public void string(String value) {
+        java.util.Objects.requireNonNull(value, "value");
+        Jackson2Support.call(() -> {
+            generator.writeString(value);
+            return null;
+        });
+    }
+
+    @Override
+    public void bool(boolean value) {
+        Jackson2Support.call(() -> {
+            generator.writeBoolean(value);
+            return null;
+        });
+    }
+
+    @Override
+    public void nullValue() {
+        Jackson2Support.call(() -> {
+            generator.writeNull();
             return null;
         });
     }

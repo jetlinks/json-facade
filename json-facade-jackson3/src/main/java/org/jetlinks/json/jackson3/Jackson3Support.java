@@ -14,14 +14,15 @@ final class Jackson3Support {
     static <T> T call(Callable<T> action) {
         try {
             return action.call();
-        } catch (JsonException e) {
-            throw e;
         } catch (Exception e) {
             throw failure(e);
         }
     }
 
-    private static JsonException failure(Exception cause) {
+    static JsonException failure(Exception cause) {
+        if (cause instanceof JsonException failure) {
+            return failure;
+        }
         JsonException.Kind kind = JsonException.Kind.BINDING;
         if (cause instanceof StreamConstraintsException) {
             kind = JsonException.Kind.LIMIT;

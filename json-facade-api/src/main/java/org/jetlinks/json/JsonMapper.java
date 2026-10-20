@@ -33,8 +33,47 @@ public interface JsonMapper {
     JsonReader reader(InputStream input);
     /** Create a token writer over a caller-owned target. */
     JsonWriter writer(OutputStream output);
+    /** Compact reusable writer without an implicit root separator. Caller owns framing and target.
+     * Create one per operation/subscription; close does not repair incomplete containers.
+     * @since 1.0.0
+     */
+    JsonWriter compactWriter(OutputStream output);
+    /** Incremental events of one document. Containers are never collected; scalar/parser limits apply.
+     * Input borrowing, cancellation and cleanup follow readSession.
+     * @since 1.0.0
+     */
+    JsonReadSession<JsonEvent> eventSession();
     /** Create an independent, nonblocking UTF-8 parser session; options are fixed for its life. */
     <T> JsonReadSession<T> readSession(JsonType<T> type, JsonReadOptions options);
+
+    /** New mutable object; providers may choose their storage implementation. */
+    default JsonObject createObject() {
+        return JsonValue.object();
+    }
+
+    /** Copy nested JSON containers, preserving explicit nulls. POJO conversion belongs to toTree. */
+    default JsonObject createObject(java.util.Map<String, ?> values) {
+        JsonObject result = createObject();
+        for (java.util.Map.Entry<?, ?> entry : values.entrySet()) {
+            if (!(entry.getKey() instanceof String name)) {
+                throw new IllegalArgumentException("JSON object keys must be Strings");
+            }
+            result.put(name, entry.getValue());
+        }
+        return result;
+    }
+
+    /** New mutable array; providers may choose their storage implementation. */
+    default JsonArray createArray() {
+        return JsonValue.array();
+    }
+
+    /** Copy nested JSON containers, preserving explicit nulls. POJO conversion belongs to toTree. */
+    default JsonArray createArray(java.util.Collection<?> values) {
+        JsonArray result = createArray();
+        values.forEach(result::add);
+        return result;
+    }
 
     default byte[] writeBytes(Object value) {
         java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();

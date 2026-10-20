@@ -44,6 +44,23 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JsonStreamMapperTest {
+    @ParameterizedTest
+    @MethodSource("providers")
+    void recordIdentityScopeDoesNotRetainPreviouslyWrittenObjects(JsonProvider provider) {
+        JsonMapper mapper = Json.builder().provider(provider).build();
+        Identified value = new Identified();
+        String json = join(JsonStreamMapper.of(mapper).writeBytes(Flux.just(value, value),
+                JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY)));
+        assertEquals(List.of(Map.of("@id", 1, "name", "item"), Map.of("@id", 1, "name", "item")),
+                mapper.read(json, List.class));
+    }
+
+    @com.fasterxml.jackson.annotation.JsonIdentityInfo(
+            generator = com.fasterxml.jackson.annotation.ObjectIdGenerators.IntSequenceGenerator.class)
+    static final class Identified {
+        public String name = "item";
+    }
+
     static Stream<JsonProvider> providers() {
         return Stream.of(new Jackson2Provider(), new Jackson3Provider());
     }
@@ -139,6 +156,52 @@ class JsonStreamMapperTest {
 
     @ParameterizedTest
     @MethodSource("providers")
+    void cancellationDoesNotWaitForAnActiveNativeWriter(JsonProvider provider) throws Exception {
+        GatedModule module = new GatedModule(true);
+        JsonMapper mapper = Json.builder().provider(provider).module(module).build();
+        AtomicBoolean cancelled = new AtomicBoolean();
+        AtomicInteger delivered = new AtomicInteger();
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        BaseSubscriber<byte[]> subscriber = new BaseSubscriber<>() {
+            @Override
+            protected void hookOnSubscribe(Subscription subscription) {
+                // Demand is deliberately started on the operation thread below.
+            }
+
+            @Override
+            protected void hookOnNext(byte[] bytes) {
+                delivered.incrementAndGet();
+            }
+
+            @Override
+            protected void hookOnError(Throwable failure) {
+                error.set(failure);
+            }
+        };
+        JsonStreamMapper.of(mapper).writeBytes(Flux.just(new GatedItem(1))
+                        .doOnCancel(() -> cancelled.set(true)),
+                JsonWriteOptions.of(JsonWriteOptions.Format.NDJSON)).subscribe(subscriber);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> request = executor.submit(() -> subscriber.request(1));
+            assertTrue(module.entered.await(5, TimeUnit.SECONDS));
+            executor.submit(subscriber::cancel).get(2, TimeUnit.SECONDS);
+            assertTrue(cancelled.get());
+            assertEquals(1, module.release.getCount());
+            module.release.countDown();
+            request.get(5, TimeUnit.SECONDS);
+            assertEquals(0, delivered.get());
+            assertNull(error.get());
+        } finally {
+            module.release.countDown();
+            subscriber.cancel();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("providers")
     void bufferCopyAllowsSourceReuseAndPreservesEveryCursorKind(JsonProvider provider) {
         for (int kind = 0; kind < 4; kind++) {
             ByteBuffer source = kind == 0 ? ByteBuffer.allocateDirect(20) : ByteBuffer.allocate(20);
@@ -177,6 +240,9 @@ class JsonStreamMapperTest {
     void outputFormatsEmptySourcesAndReadOnlyBuffersHaveStableOwnership(JsonProvider provider) {
         JsonStreamMapper mapper = stream(provider);
         for (JsonWriteOptions.Format format : JsonWriteOptions.Format.values()) {
+            if (format == JsonWriteOptions.Format.SINGLE_VALUE) {
+                continue;
+            }
             JsonWriteOptions options = new JsonWriteOptions(format, 2, 1000);
             String expected = format == JsonWriteOptions.Format.ARRAY ? "[1,2]" : "1\n2\n";
             assertEquals(expected, join(mapper.writeBytes(Flux.just(1, 2), options)));
@@ -269,6 +335,15 @@ class JsonStreamMapperTest {
     private static final class GatedModule implements JsonModule {
         private final CountDownLatch entered = new CountDownLatch(1);
         private final CountDownLatch release = new CountDownLatch(1);
+        private final boolean writing;
+
+        private GatedModule() {
+            this(false);
+        }
+
+        private GatedModule(boolean writing) {
+            this.writing = writing;
+        }
 
         @Override
         public String id() {
@@ -277,26 +352,36 @@ class JsonStreamMapperTest {
 
         @Override
         public void configure(JsonModuleContext context) {
-            context.add(GatedItem.class, new GatedAdapter(entered, release));
+            context.add(GatedItem.class, new GatedAdapter(entered, release, writing));
         }
     }
 
     private static final class GatedAdapter implements JsonAdapter<GatedItem> {
         private final CountDownLatch entered;
         private final CountDownLatch release;
+        private final boolean writing;
 
-        private GatedAdapter(CountDownLatch entered, CountDownLatch release) {
+        private GatedAdapter(CountDownLatch entered, CountDownLatch release, boolean writing) {
             this.entered = entered;
             this.release = release;
+            this.writing = writing;
         }
 
         @Override
         public void write(GatedItem item, JsonWriter writer) {
+            if (writing) {
+                awaitRelease();
+            }
             writer.value(item.value());
         }
 
         @Override
         public GatedItem read(JsonReader reader) {
+            awaitRelease();
+            return new GatedItem(reader.readValue(JsonType.of(Integer.class)));
+        }
+
+        private void awaitRelease() {
             entered.countDown();
             try {
                 assertTrue(release.await(10, TimeUnit.SECONDS));
@@ -304,7 +389,6 @@ class JsonStreamMapperTest {
                 Thread.currentThread().interrupt();
                 throw new AssertionError(e);
             }
-            return new GatedItem(reader.readValue(JsonType.of(Integer.class)));
         }
     }
 

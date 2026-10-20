@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.async.ByteBufferFeeder;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.util.TokenBuffer;
+import org.jetlinks.json.JsonEvent;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonReadOptions;
 import org.jetlinks.json.JsonToken;
@@ -24,7 +25,12 @@ final class Jackson2Session<T> extends AbstractReadSession<T> {
 
     Jackson2Session(JsonMapper mapper, ObjectMapper nativeMapper, JsonType<T> type,
                     JsonReadOptions options) throws IOException {
-        super(options, mapper.options().maxValueBytes());
+        this(mapper, nativeMapper, type, options, false);
+    }
+
+    Jackson2Session(JsonMapper mapper, ObjectMapper nativeMapper, JsonType<T> type,
+                    JsonReadOptions options, boolean events) throws IOException {
+        super(options, mapper.options().maxValueBytes(), events);
         this.mapper = nativeMapper;
         reader = nativeMapper.readerFor(nativeMapper.constructType(type.type()));
         parser = nativeMapper.getFactory().createNonBlockingByteBufferParser();
@@ -33,14 +39,31 @@ final class Jackson2Session<T> extends AbstractReadSession<T> {
 
     @Override
     protected Event nextEvent() {
-        return Jackson2Support.call(() -> {
+        // Avoid a captured callback in the per-token path; error classification stays shared.
+        try {
             com.fasterxml.jackson.core.JsonToken nativeToken = parser.nextToken();
             exhausted = nativeToken == null;
             JsonToken token = Jackson2Reader.token(nativeToken);
             String name = token == JsonToken.FIELD_NAME && tracksPath() ? parser.getText() : null;
-            long line = parser.currentTokenLocation().getLineNr();
-            return new Event(token, name, parser.currentTokenLocation().getByteOffset(),
-                    parser.currentLocation().getByteOffset(), line, parser.currentLocation().getLineNr());
+            var start = parser.currentTokenLocation();
+            var end = parser.currentLocation();
+            return event(token, name, start.getByteOffset(), end.getByteOffset(),
+                    start.getLineNr(), end.getLineNr());
+        } catch (Exception error) {
+            throw Jackson2Support.failure(error);
+        }
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    protected T bindEvent(JsonToken token) {
+        return Jackson2Support.call(() -> {
+            String text = switch (token) {
+                case FIELD_NAME, STRING, NUMBER, BOOLEAN -> parser.getText();
+                default -> null;
+            };
+            // Only the eventSession factory enables this branch, with T fixed to JsonEvent.
+            return (T) JsonEvent.token(token, text);
         });
     }
 

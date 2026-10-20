@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.jetlinks.json.JsonException;
+import org.jetlinks.json.JsonArray;
+import org.jetlinks.json.JsonObject;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
 import org.jetlinks.json.JsonPointer;
@@ -49,6 +51,54 @@ public abstract class JsonMapperContract {
 
     protected final JsonMapper mapper() {
         return mapper(JsonOptions.DEFAULT);
+    }
+
+    @Test
+    void treeFactoriesAndExportsIsolateNestedMutableContainers() {
+        JsonMapper json = mapper();
+        List<Object> original = new ArrayList<>(List.of(1, 2));
+        JsonObject object = json.createObject(Map.of("rows", original));
+        original.add(3);
+        assertEquals(2, object.get("rows").size());
+        object.get("rows").add(null);
+        assertEquals(List.of(1, 2, 3), original);
+        Map<?, ?> exported = (Map<?, ?>) object.toJavaValue();
+        ((List<?>) exported.get("rows")).clear();
+        assertEquals(3, object.get("rows").size());
+        JsonArray array = json.createArray(List.of(object, new int[]{4, 5}));
+        object.put("later", true);
+        assertTrue(array.get(0).get("later").isMissing());
+        assertEquals(5, array.get(1).get(1).toJavaValue());
+        assertEquals(array.toJavaValue(), json.read(json.write(array), JsonArray.class).toJavaValue());
+        assertEquals(object.toJavaValue(), json.read(json.write(object), JsonObject.class).toJavaValue());
+        assertEquals(Map.of("tree", object.toJavaValue()),
+                json.read(json.write(Map.of("tree", object)), Map.class));
+        assertInstanceOf(JsonArray.class, json.createArray());
+        assertThrows(IllegalArgumentException.class, () -> JsonValue.of(Map.of(1, "value")));
+        assertThrows(IllegalArgumentException.class, () -> json.createArray().add(new Item(1)));
+        assertThrows(IllegalStateException.class, () -> json.createArray().add(JsonValue.MISSING));
+        assertEquals(JsonException.Kind.BINDING,
+                assertThrows(JsonException.class, () -> json.read("[]", JsonObject.class)).kind());
+    }
+
+    @Test
+    void reusableCompactWriterRetainsAdaptersAndValidatesNumericTokens() {
+        JsonMapper json = mapper(JsonOptions.DEFAULT, new LabelsModule());
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (JsonWriter writer = json.compactWriter(bytes)) {
+            writer.beginArray();
+            writer.value(new Label("a"));
+            writer.value(json.createObject(Map.of("n", 1)));
+            writer.number("1.2300E+2");
+            writer.endArray();
+            writer.flush();
+        }
+        assertEquals("[\"label:a\",{\"n\":1},1.2300E+2]", bytes.toString(StandardCharsets.UTF_8));
+        for (String invalid : List.of("01", "NaN", "1,2", "1e", "+1")) {
+            try (JsonWriter writer = json.compactWriter(new ByteArrayOutputStream())) {
+                assertThrows(JsonException.class, () -> writer.number(invalid));
+            }
+        }
     }
 
     @Test
@@ -102,7 +152,7 @@ public abstract class JsonMapperContract {
         JsonMapper json = mapper(options, new LabelsModule());
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("label", new Label("a"));
-        values.put("tree", JsonValue.of(Map.of("nested", List.of(new Label("b")))));
+        values.put("tree", json.toTree(Map.of("nested", List.of(new Label("b")))));
         values.put("null", null);
         TrackedOutput target = new TrackedOutput();
         json.writeCompact(values, target);

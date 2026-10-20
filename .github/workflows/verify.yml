@@ -18,6 +18,8 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: maven
       - run: mvn -B -ntp verify
+      - name: Bounded-heap streaming smoke matrix
+        run: python3 scripts/run-streaming-stress.py --mib 8 --heaps 128 --chunks 64 8192 > target/streaming-smoke.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -28,3 +30,4 @@ jobs:
             **/target/surefire-reports/
             **/target/spotbugsXml.xml
             **/target/checkstyle-result.xml
+            target/streaming-smoke.jsonl

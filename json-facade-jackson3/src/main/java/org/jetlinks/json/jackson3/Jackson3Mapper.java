@@ -7,13 +7,14 @@ import java.io.Writer;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.ObjectWriter;
 import tools.jackson.databind.SerializationFeature;
+import org.jetlinks.json.JsonEvent;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
 import org.jetlinks.json.JsonReadOptions;
 import org.jetlinks.json.JsonReadSession;
 import org.jetlinks.json.JsonReader;
 import org.jetlinks.json.JsonType;
-import org.jetlinks.json.JsonValue;
+import org.jetlinks.json.internal.JsonValues;
 import org.jetlinks.json.JsonWriter;
 
 /** Immutable facade over a fully configured native mapper; the native instance is never exposed. */
@@ -25,7 +26,7 @@ final class Jackson3Mapper implements JsonMapper {
     Jackson3Mapper(ObjectMapper mapper, JsonOptions options) {
         this.mapper = mapper;
         this.options = options;
-        compactWriter = mapper.writer().without(SerializationFeature.INDENT_OUTPUT);
+        compactWriter = mapper.writer().without(SerializationFeature.INDENT_OUTPUT).withRootValueSeparator("");
     }
 
     @Override
@@ -79,7 +80,18 @@ final class Jackson3Mapper implements JsonMapper {
 
     @Override
     public JsonWriter writer(OutputStream output) {
-        return Jackson3Support.call(() -> new Jackson3Writer(mapper.createGenerator(output)));
+        return Jackson3Support.call(() -> new Jackson3Writer(mapper.createGenerator(output), mapper.writer()));
+    }
+
+    @Override
+    public JsonWriter compactWriter(OutputStream output) {
+        return Jackson3Support.call(() -> new Jackson3Writer(compactWriter.createGenerator(output), compactWriter));
+    }
+
+    @Override
+    public JsonReadSession<JsonEvent> eventSession() {
+        return Jackson3Support.call(() -> new Jackson3Session<>(this, mapper, JsonType.of(JsonEvent.class),
+                JsonReadOptions.of(JsonReadOptions.Mode.SINGLE_VALUE), true));
     }
 
     @Override
@@ -88,6 +100,6 @@ final class Jackson3Mapper implements JsonMapper {
     }
 
     private static Object unwrap(Object value) {
-        return value instanceof JsonValue node ? node.toJavaValue() : value;
+        return JsonValues.bindingValue(value);
     }
 }
