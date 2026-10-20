@@ -89,6 +89,25 @@ class Jackson3ContractTest extends JsonMapperContract {
     }
 
     @Test
+    void treeConversionsHonorNativeCoercionAndRemainIsolated() {
+        JsonMapper ordinary = Json.builder().provider(new Jackson3Provider()).build();
+        JsonMapper strict = Json.builder().provider(new Jackson3Provider())
+                .configureNative(tools.jackson.databind.json.JsonMapper.Builder.class, builder ->
+                        builder.withCoercionConfig(tools.jackson.databind.type.LogicalType.Integer,
+                                coercion -> coercion.setCoercion(
+                                        tools.jackson.databind.cfg.CoercionInputShape.String,
+                                        tools.jackson.databind.cfg.CoercionAction.Fail)))
+                .build();
+        assertEquals(12, ordinary.createObject(java.util.Map.of("n", "12")).get("n").asInteger());
+        JsonException error = assertThrows(JsonException.class,
+                () -> strict.readTree("{\"n\":\"12\"}").get("n").asInteger(99));
+        assertEquals(JsonException.Kind.BINDING, error.kind());
+        assertEquals("/n", error.pointer().toString());
+        assertEquals(99, strict.createObject().get("missing").asInteger(99));
+        assertEquals(12, strict.createObject(java.util.Map.of("n", 12)).get("n").asInteger());
+    }
+
+    @Test
     void incompatibleNativeTypesFailBeforeAnyCallbackRuns() {
         AtomicInteger invoked = new AtomicInteger();
         JsonException error = assertThrows(JsonException.class, () -> Json.builder().provider("jackson3")

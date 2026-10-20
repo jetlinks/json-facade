@@ -26,6 +26,7 @@ import org.jetlinks.json.JsonArray;
 import org.jetlinks.json.JsonObject;
 import org.jetlinks.json.JsonValue;
 import org.jetlinks.json.internal.JsonValues;
+import org.jetlinks.json.internal.JsonTreeBinding;
 import org.jetlinks.json.spi.JsonAdapter;
 import org.jetlinks.json.spi.JsonConfiguration;
 import org.jetlinks.json.spi.JsonModuleContext;
@@ -91,7 +92,7 @@ public final class Jackson2Provider implements JsonProvider {
                     factory.isEnabled(StreamReadFeature.STRICT_DUPLICATE_DETECTION), omitNulls,
                     snapshot.isEnabled(SerializationFeature.INDENT_OUTPUT), depth,
                     limits.getMaxStringLength(), limits.getMaxNumberLength(), maxValueBytes);
-            return new Jackson2Mapper(snapshot, options);
+            return bindTree(snapshot, options);
         } catch (RuntimeException error) {
             throw new JsonException(JsonException.Kind.CONFIGURATION, "Cannot adapt native JSON mapper", error);
         }
@@ -134,7 +135,14 @@ public final class Jackson2Provider implements JsonProvider {
         configuration.configureNative(builder);
         var mapper = builder.build();
         validateNativeConfiguration(mapper, options);
-        return new Jackson2Mapper(mapper, options);
+        return bindTree(mapper, options);
+    }
+
+    private static JsonMapper bindTree(ObjectMapper nativeMapper, JsonOptions options) {
+        JsonTreeBinding binding = new JsonTreeBinding();
+        var config = nativeMapper.getDeserializationConfig();
+        nativeMapper.setConfig(config.with(config.getAttributes().withSharedAttribute(JsonTreeBinding.class, binding)));
+        return binding.initialize(new Jackson2Mapper(nativeMapper, options));
     }
 
     private static void validateNativeConfiguration(com.fasterxml.jackson.databind.json.JsonMapper mapper,
@@ -174,14 +182,24 @@ public final class Jackson2Provider implements JsonProvider {
         SimpleModule module = new SimpleModule("json-facade-tree");
         module.addDeserializer(JsonObject.class, new JsonDeserializer<>() {
             @Override
+            public JsonObject getNullValue(DeserializationContext context) {
+                return JsonValues.objectView(JsonValues.of(null, treeMapper(context)));
+            }
+
+            @Override
             public JsonObject deserialize(JsonParser input, DeserializationContext context) throws IOException {
-                return JsonValue.of(context.readValue(input, Object.class)).asObject();
+                return JsonValues.of(context.readValue(input, Object.class), treeMapper(context)).asObject();
             }
         });
         module.addDeserializer(JsonArray.class, new JsonDeserializer<>() {
             @Override
+            public JsonArray getNullValue(DeserializationContext context) {
+                return JsonValues.arrayView(JsonValues.of(null, treeMapper(context)));
+            }
+
+            @Override
             public JsonArray deserialize(JsonParser input, DeserializationContext context) throws IOException {
-                return JsonValue.of(context.readValue(input, Object.class)).asArray();
+                return JsonValues.of(context.readValue(input, Object.class), treeMapper(context)).asArray();
             }
         });
         module.addSerializer(JsonValue.class, new JsonSerializer<>() {
@@ -193,7 +211,7 @@ public final class Jackson2Provider implements JsonProvider {
         module.addDeserializer(JsonValue.class, new JsonDeserializer<>() {
             @Override
             public JsonValue deserialize(JsonParser input, DeserializationContext context) throws IOException {
-                return JsonValue.of(context.readValue(input, Object.class));
+                return JsonValues.of(context.readValue(input, Object.class), treeMapper(context));
             }
 
             @Override
@@ -202,6 +220,10 @@ public final class Jackson2Provider implements JsonProvider {
             }
         });
         return module;
+    }
+
+    private static JsonMapper treeMapper(DeserializationContext context) {
+        return ((JsonTreeBinding) context.getAttribute(JsonTreeBinding.class)).mapper();
     }
 
     private static final class AdapterContext implements JsonModuleContext {

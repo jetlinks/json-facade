@@ -80,14 +80,14 @@ class JsonApiTest {
         copy.remove("a/b");
         assertEquals(0, copy.size());
         assertEquals(0, JsonValue.of("scalar").size());
-        assertSame(JsonValue.MISSING, tree.get(-1));
-        assertSame(JsonValue.MISSING, tree.get("a/b").get(3));
+        assertTrue(tree.get(-1).isMissing());
+        assertTrue(tree.get("a/b").get(3).isMissing());
         for (String path : List.of("/a~1b/01", "/a~1b/-", "/a~1b/999999999999999999999", "/absent/x")) {
             assertTrue(tree.at(JsonPointer.of(path)).isMissing(), path);
         }
         assertThrows(IllegalStateException.class, JsonValue.MISSING::toJavaValue);
-        assertThrows(IllegalStateException.class, () -> JsonValue.NULL.add(1));
-        assertThrows(IllegalStateException.class, () -> JsonValue.of(1).put("x", 1));
+        assertThrows(JsonException.class, () -> JsonValue.NULL.add(1));
+        assertThrows(JsonException.class, () -> JsonValue.of(1).put("x", 1));
         assertEquals(List.of("~", "/", ""), JsonPointer.of("/~0/~1/").segments());
         for (String path : List.of("x", "/~", "/~2")) {
             assertThrows(IllegalArgumentException.class, () -> JsonPointer.of(path));

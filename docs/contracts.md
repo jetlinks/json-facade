@@ -132,7 +132,7 @@ structured-document copying under 128 MiB heap/32 MiB direct memory. Its
 `--release-only` mode retains 192 closed owners after 1 MiB allocations per owner,
 without explicit GC, checking that their former storage can be reclaimed/reused.
 
-Java 17/21 quality gates pass 168 tests with zero failures, errors or skips;
+Java 17/21 quality gates pass with zero failures, errors or skips;
 Checkstyle and SpotBugs report no issues. On each JDK, the DataBuffer matrix
 passes 32 documents of at least 1 GiB, 64 small-chunk cases and eight retained
 closed-owner forks. Pooled factories finish with zero pinned bytes. The existing
@@ -226,11 +226,64 @@ exclude network/TLS work.
 
 ## Types, tree and cursors
 
+### Typed access, validation and locations
+
+Tree access is owned by the API/shared JDK tree and both Jackson Providers.
+Node-level `as(Class/JsonType)`, common scalar conversions (including nullable
+`asInteger`), and non-null `getObject/getArray` views support both names and indices. Missing,
+JSON null and out-of-range reads remain chainable; typed shape mismatches and failed
+conversions throw. Primitive convenience methods use zero/false, or an explicit default,
+only for missing/null input. Present values follow the owning Provider's conversion policy.
+Static structural factories stay configuration-free; conversion of a present value requires
+a mapper-created/bound tree or explicit `mapper.convert`. No implicit global fallback exists.
+
+Mapper factories, tree reads/conversion, typed/nested DTO reads, cursor and incremental
+binding must attach the configured mapper. Nested views and deep copies retain it; copies
+start a new root location and insertion takes the destination location/configuration.
+Paths belong to access views, including absent object/array views, rather than backing data.
+They retain only immutable segments, never ancestor nodes; render strings/pointers on demand.
+This adds no whole-tree copy per access, scheduler, tracing, MBean or long-lived cache.
+
+`requirePresent`, `requireNonNull` and predicate-based `require` return the current node
+on success. Failure passes immutable structured metadata to a lazy exception factory;
+custom exceptions and predicate failures propagate unchanged. Default failures use
+`JsonException` with VALIDATION kind. Unified failures carry reason, RFC 6901 pointer,
+escaped display path and original cause. Provider normalization extracts native structured
+paths; tree conversion prefixes its access path without nesting repeated facade exceptions.
+Upstream reactive errors and ordinary API argument errors retain their existing contracts.
+There is no new getter SPI, parser fork, automatic node creation or schema-validation DSL.
+
+Real-engine contract/configuration tests cover missing/null/shape/range cases, custom exceptions,
+native coercion/overflow/adapters, nested DTO/generic/cursor/session trees, mapper isolation,
+copy/insertion locations and retained failure/view memory boundaries. Existing transport
+algorithms remain shared. The standalone TCK `JsonTreeAccessStress` retains child/absent
+views and validation errors while allocating 512 MiB of former ancestor storage under a
+64 MiB heap, with no explicit GC. Path segments store numeric indices directly and render
+their strings only on diagnostic access. Run it with `python3 scripts/run-tree-access-stress.py`;
+the Java 17/21 CI matrix includes this retained-view regression.
+
+The typed-tree change passes the full Java 17.0.18 / 21.0.10 quality gates with
+187 tests on each JDK, zero failures/errors/skips, and no Checkstyle/SpotBugs
+issues. Each JDK also passes both 64 MiB retained-tree forks, all 24 closed-resource
+forks (64 MiB heap / 32 MiB direct memory), and 18 streaming forks with at least
+1 GiB per document under a 128 MiB heap: both Providers and adapted Jackson 2,
+each across array/NDJSON/wrapped reads, array/NDJSON writes and document copying.
+Transport algorithms are unchanged; earlier Netty/DataBuffer GiB evidence remains
+applicable. These regressions establish bounded retention, not a throughput gain
+or an allocation-free tree API.
+
 `JsonType<T>` stores JDK Type and captures nested generics without Jackson or Spring types. Conversion is JSON binding, not bean copying; object identity is not preserved. `read` requires one full root value and rejects trailing nonwhitespace content. Empty input differs from JSON null.
 
 `JsonValue` is the common tree interface; `JsonObject` and `JsonArray` expose typed mutable containers. Provider-created mappers own `createObject()` / `createArray()` and Map/Collection initialization. The default implementation uses JDK containers. Initializers and put/add/set copy nested JSON containers; explicit nulls are retained and all object keys must be Strings. Inputs must be acyclic JSON-compatible values; use configured `toTree` for arbitrary POJOs. `JsonValue.of` copies Java containers but retains an existing node's identity. Its static object/array methods are configuration-free structural shortcuts.
 
-`NULL` and `MISSING` are distinct non-null sentinel nodes. `get`/`at` return MISSING for absent locations; RFC 6901 pointers support escaped `/` and `~`. Array indices use canonical decimal notation. `asObject`/`asArray` reject other shapes. `toJavaValue` exports an independent Map/List snapshot; `deepCopy` returns an independent tree. Cross-Provider nodes obey the same logical-value contract. Provider binding can synchronously borrow its own JDK tree without making an export snapshot, but cannot expose or retain that backing graph. Trees are not thread-safe.
+`NULL` and `MISSING` are distinct non-null root sentinel nodes. Access views retain locations;
+test `isNull/isMissing` rather than singleton identity. RFC 6901 pointers support escaped
+`/` and `~`; `JsonPointer.toString()` encodes them. Array indices use canonical decimal notation.
+`asObject/asArray` reject other shapes, including absent typed views. `toJavaValue` exports an
+independent Map/List snapshot; `deepCopy` returns an independent tree. Cross-Provider nodes
+obey the same logical-value contract. Provider binding can synchronously borrow its own JDK
+tree without making an export snapshot, but cannot expose or retain that backing graph.
+Trees are not thread-safe.
 
 Reader `readValue`/`skipValue` consume the whole current value. Its next `next()` returns the successor token. Readers/writers/sessions are operation-local and not thread-safe. Their close methods release internal state and do not close caller sources/targets. Closed wrappers must also detach native cursors, binding contexts and borrowed input/output references, including when native cleanup fails; retaining a closed wrapper must not retain its former buffers or target. Reactor resources detach their owned session/writer, and discarded segmented output releases its queue storage. Writer close does not repair incomplete containers. UTF-8 is the byte encoding; character sources/targets keep their character semantics.
 

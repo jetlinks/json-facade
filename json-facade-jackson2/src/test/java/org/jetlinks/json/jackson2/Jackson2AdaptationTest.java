@@ -111,7 +111,40 @@ class Jackson2AdaptationTest {
         Tree result = facade.read(facade.write(value), Tree.class);
         assertEquals(1, result.object().get("a").toJavaValue());
         assertEquals(2, result.array().get(0).toJavaValue());
+        assertEquals(1, result.object().get("a").asInteger());
+        assertEquals(2, result.array().get(0).asInt());
         assertSame(JsonValue.NULL, facade.read("null", JsonValue.class));
+    }
+
+    @Test
+    void adaptedTreesUseNativeCoercionAndPreserveHostContextAttributes() {
+        ObjectMapper source = com.fasterxml.jackson.databind.json.JsonMapper.builder()
+                .defaultAttributes(com.fasterxml.jackson.databind.cfg.ContextAttributes.getEmpty()
+                        .withSharedAttribute("offset", 30))
+                .withCoercionConfig(com.fasterxml.jackson.databind.type.LogicalType.Integer,
+                        coercion -> coercion.setCoercion(com.fasterxml.jackson.databind.cfg.CoercionInputShape.String,
+                                com.fasterxml.jackson.databind.cfg.CoercionAction.Fail))
+                .build();
+        SimpleModule module = new SimpleModule("context-number");
+        module.addDeserializer(ContextNumber.class, new com.fasterxml.jackson.databind.JsonDeserializer<>() {
+            @Override
+            public ContextNumber deserialize(JsonParser input,
+                    com.fasterxml.jackson.databind.DeserializationContext context) throws IOException {
+                return new ContextNumber(input.getIntValue() + (Integer) context.getAttribute("offset"));
+            }
+        });
+        source.registerModule(module);
+        var facade = Jackson2Provider.adapt(source);
+        assertEquals(42, facade.readTree("12").as(ContextNumber.class).value());
+        assertThrows(JsonException.class, () -> facade.readTree("{\"n\":\"12\"}").get("n").asInteger());
+        assertEquals(12, facade.read("{\"a\":12}", JsonObject.class).get("a").asInt());
+        assertEquals(30, source.getDeserializationConfig().getAttributes().getAttribute("offset"));
+        org.junit.jupiter.api.Assertions.assertNull(source.getDeserializationConfig().getAttributes()
+                .getAttribute(org.jetlinks.json.internal.JsonTreeBinding.class));
+    }
+
+    /** Native context attributes survive the independent facade snapshot. */
+    public record ContextNumber(int value) {
     }
 
     @Test

@@ -105,6 +105,12 @@ See [Netty usage and ownership](docs/user-guide.md#netty) before adding async qu
 
 `JsonMapper.createObject()` / `createArray()` return the neutral `JsonObject` / `JsonArray` interfaces. Map/Collection initializers and mutations copy nested JSON containers; object keys are Strings. `toJavaValue()` exports an independent JDK snapshot. Use `toTree(bean)` for configured POJO mapping.
 
+Node-level conversion and validation support calls such as
+`tree.get("config").get("port").requireNonNull().asInt()` and
+`tree.getArray("items").get(0).asInteger()`. Missing/null locations remain chainable;
+present values use the owning Provider configuration. Errors carry structured access paths,
+and assertion factories can return application exceptions. See the [tree guide](docs/user-guide.md#tree).
+
 For a document with metadata and a streamed array, compose structural events:
 
 ```java

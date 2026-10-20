@@ -18,6 +18,8 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: maven
       - run: mvn -B -ntp verify
+      - name: Tree view and validation-error ancestor-retention regression
+        run: python3 scripts/run-tree-access-stress.py > target/tree-access.jsonl
       - name: Bounded-heap streaming smoke matrix
         run: python3 scripts/run-streaming-stress.py --mib 8 --heaps 128 --chunks 64 8192 > target/streaming-smoke.jsonl
       - name: Closed resource heap and direct-memory regression
@@ -41,6 +43,7 @@ jobs:
             **/target/spotbugsXml.xml
             **/target/checkstyle-result.xml
             target/streaming-smoke.jsonl
+            target/tree-access.jsonl
             target/resource-release.jsonl
             target/netty-streaming.jsonl
             target/netty-release.jsonl

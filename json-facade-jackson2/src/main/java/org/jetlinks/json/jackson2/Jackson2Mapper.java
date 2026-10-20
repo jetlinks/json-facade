@@ -36,6 +36,7 @@ final class Jackson2Mapper implements JsonMapper {
 
     @Override
     public void write(Object value, OutputStream output) {
+        java.util.Objects.requireNonNull(output, "output");
         Jackson2Support.call(() -> {
             mapper.writeValue(output, unwrap(value));
             return null;
@@ -44,6 +45,7 @@ final class Jackson2Mapper implements JsonMapper {
 
     @Override
     public void write(Object value, Writer output) {
+        java.util.Objects.requireNonNull(output, "output");
         Jackson2Support.call(() -> {
             mapper.writeValue(output, unwrap(value));
             return null;
@@ -52,6 +54,7 @@ final class Jackson2Mapper implements JsonMapper {
 
     @Override
     public void writeCompact(Object value, OutputStream output) {
+        java.util.Objects.requireNonNull(output, "output");
         Jackson2Support.call(() -> {
             compactWriter.writeValue(output, unwrap(value));
             return null;
@@ -60,32 +63,40 @@ final class Jackson2Mapper implements JsonMapper {
 
     @Override
     public <T> T read(InputStream input, JsonType<T> type) {
+        java.util.Objects.requireNonNull(input, "input");
+        java.util.Objects.requireNonNull(type, "type").type();
         return Jackson2Support.call(() -> mapper.readValue(input, mapper.constructType(type.type())));
     }
 
     @Override
     public <T> T read(Reader input, JsonType<T> type) {
+        java.util.Objects.requireNonNull(input, "input");
+        java.util.Objects.requireNonNull(type, "type").type();
         return Jackson2Support.call(() -> mapper.readValue(input, mapper.constructType(type.type())));
     }
 
     @Override
     public <T> T convert(Object value, JsonType<T> type) {
+        java.util.Objects.requireNonNull(type, "type").type();
         return Jackson2Support.call(() -> mapper.convertValue(unwrap(value), mapper.constructType(type.type())));
     }
 
     @Override
     public JsonReader reader(InputStream input) {
+        java.util.Objects.requireNonNull(input, "input");
         return Jackson2Support.call(() -> new Jackson2Reader(mapper.getFactory().createParser(input)));
     }
 
     @Override
     public JsonWriter writer(OutputStream output) {
+        java.util.Objects.requireNonNull(output, "output");
         return Jackson2Support.call(() -> new Jackson2Writer(mapper.getFactory().createGenerator(output),
                 mapper.writer()));
     }
 
     @Override
     public JsonWriter compactWriter(OutputStream output) {
+        java.util.Objects.requireNonNull(output, "output");
         return Jackson2Support.call(() -> new Jackson2Writer(compactWriter.createGenerator(output),
                 compactWriter));
     }
@@ -98,6 +109,8 @@ final class Jackson2Mapper implements JsonMapper {
 
     @Override
     public <T> JsonReadSession<T> readSession(JsonType<T> type, JsonReadOptions readOptions) {
+        java.util.Objects.requireNonNull(type, "type").type();
+        java.util.Objects.requireNonNull(readOptions, "readOptions");
         return Jackson2Support.call(() -> new Jackson2Session<>(this, mapper, type, readOptions));
     }
 

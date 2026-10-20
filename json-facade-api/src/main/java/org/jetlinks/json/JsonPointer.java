@@ -6,7 +6,8 @@ import java.util.List;
 /** RFC 6901 pointer, with decoded immutable segments. An empty pointer selects the root.
  * @since 1.0.0
  */
-public record JsonPointer(List<String> segments) {
+public record JsonPointer(List<String> segments) implements java.io.Serializable {
+    private static final long serialVersionUID = 1L;
     public JsonPointer {
         segments = List.copyOf(segments);
     }
@@ -23,6 +24,16 @@ public record JsonPointer(List<String> segments) {
             result.add(decode(segment));
         }
         return new JsonPointer(result);
+    }
+
+    /** Canonical RFC 6901 encoding, including escaping of literal '~' and '/'. */
+    @Override
+    public String toString() {
+        StringBuilder result = new StringBuilder();
+        for (String segment : segments) {
+            result.append('/').append(segment.replace("~", "~0").replace("/", "~1"));
+        }
+        return result.toString();
     }
 
     private static String decode(String segment) {

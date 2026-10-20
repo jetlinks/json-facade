@@ -51,7 +51,7 @@ public interface JsonMapper {
 
     /** New mutable object; providers may choose their storage implementation. */
     default JsonObject createObject() {
-        return JsonValue.object();
+        return org.jetlinks.json.internal.JsonValues.object(this);
     }
 
     /** Copy nested JSON containers, preserving explicit nulls. POJO conversion belongs to toTree. */
@@ -68,7 +68,7 @@ public interface JsonMapper {
 
     /** New mutable array; providers may choose their storage implementation. */
     default JsonArray createArray() {
-        return JsonValue.array();
+        return org.jetlinks.json.internal.JsonValues.array(this);
     }
 
     /** Copy nested JSON containers, preserving explicit nulls. POJO conversion belongs to toTree. */
@@ -105,10 +105,10 @@ public interface JsonMapper {
     }
 
     default JsonValue readTree(String input) {
-        return JsonValue.of(read(input, Object.class));
+        return org.jetlinks.json.internal.JsonValues.of(read(input, Object.class), this);
     }
 
     default JsonValue toTree(Object value) {
-        return JsonValue.of(convert(value, JsonType.of(Object.class)));
+        return org.jetlinks.json.internal.JsonValues.of(convert(value, JsonType.of(Object.class)), this);
     }
 }

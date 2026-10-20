@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Uses no engine mocks. Test payloads are deliberately bounded.
  * @since 1.0.0
  */
-public abstract class JsonMapperContract {
+public abstract class JsonMapperContract extends JsonTreeContract {
     private static final JsonType<List<Map<String, BigDecimal>>> DECIMAL_ROWS = new JsonType<>() { };
 
     protected abstract JsonMapper mapper(JsonOptions options, JsonModule... modules);
@@ -264,8 +264,8 @@ public abstract class JsonMapperContract {
     void neutralTreeRoundTripsWithoutEngineTypes() {
         JsonMapper json = mapper();
         JsonValue tree = JsonValue.object().put("n", null).put("rows", JsonValue.array().add(1).add("中"));
-        assertSame(JsonValue.NULL, tree.get("n"));
-        assertSame(JsonValue.MISSING, tree.get("absent"));
+        assertTrue(tree.get("n").isNull());
+        assertTrue(tree.get("absent").isMissing());
         assertEquals("中", tree.at(JsonPointer.of("/rows/1")).toJavaValue());
         assertEquals(tree.toJavaValue(), json.readTree(json.write(tree)).toJavaValue());
         assertEquals(Map.of("value", 8), json.toTree(new Item(8)).toJavaValue());

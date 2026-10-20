@@ -339,7 +339,7 @@ root.get("items").asArray().add(Map.of("id", "device-2", "count", 4));
 root.remove("version");
 
 JsonValue id = root.at(JsonPointer.of("/items/0/id"));
-String idText = (String) id.toJavaValue();
+String idText = id.asString();
 boolean explicitNull = root.get("note").isNull();     // true
 boolean absent = root.get("unknown").isMissing();     // true
 String json = mapper.write(root);
@@ -349,7 +349,7 @@ String json = mapper.write(root);
 
 初始 Map/Collection 和 `put/add/set` 会复制嵌套容器，包括已有容器节点。插入 `items` 后再改原 `items`，不会修改 `root` 中的副本；修改应从 `root.get("items")` 取得节点。输入须无环，对象键必须是 String，显式 null 会保留。
 
-`get/at` 缺失时返回 `JsonValue.MISSING`，显式 null 返回 `JsonValue.NULL`，两者都不是 Java null。调用 `MISSING.toJavaValue()` 会失败，应先检查。`asObject/asArray` 只接受对应形状，类型错误会抛异常。
+`get/at` 缺失时返回 `isMissing()` 为 true 的节点，显式 null 返回 `isNull()` 为 true 的节点，两者都不是 Java null。访问视图携带路径，使用状态方法判断；不要通过与 `NULL/MISSING` 比较对象身份判断。缺失节点的 `toJavaValue()` 会失败。`asObject/asArray` 只接受实际对应形状，类型错误会抛带路径的 `JsonException`。
 
 JSON Pointer 遵循 RFC 6901：空指针 `""` 表示根，`/a~1b/~0key` 访问键 `a/b` 下的 `~key`；数组索引使用 `0`、`1` 等规范十进制，`01` 和 `-` 不作为可读取索引。它不是 JSONPath，不支持通配或条件筛选。
 
@@ -368,7 +368,80 @@ String treeBinary = mapper.write(mapper.createObject(Map.of("data", new byte[] {
 
 `createObject/createArray/JsonValue.of` 接受 JSON 兼容标量、Map、Collection 和 Java 数组，不对任意 POJO、Instant 等执行绑定；需要应用命名、日期、适配器或非 String Map 键策略时使用 `mapper.toTree(value)`。`JsonValue.of(existingNode)` 保留节点身份，若要隔离请用 `deepCopy()`。
 
-树当前没有字段迭代器、`asString/asInt` 等标量快捷 getter，也没有数组 `remove/insert/clear`。读取标量用 `toJavaValue()` 并检查实际类型；遍历未知对象字段可导出 Map 快照，但会复制。需要高吞吐遍历大文档时用游标或事件，避免反复导出。当前默认树节点的 `equals` 不做结构比较；需要比较 JSON 数据时可比较导出的 Java 值，并另外明确数字类型/scale 的比较规则。
+树当前没有字段迭代器，也没有数组 `remove/insert/clear`；遍历未知对象字段可导出 Map 快照，但会复制。需要高吞吐遍历大文档时用游标或事件，避免反复导出。当前默认树节点的 `equals` 不做结构比较；需要比较 JSON 数据时可比较导出的 Java 值，并另外明确数字类型/scale 的比较规则。
+
+### 6.3 类型转换与安全链式读取
+
+```java
+JsonObject root = mapper.readTree(
+    "{\"config\":{\"port\":\"1883\"},\"items\":[{\"count\":3}]}").asObject();
+
+int port = root.get("config").get("port").asInt();
+Integer count = root.getArray("items").getObject(0).get("count").asInteger();
+int fallback = root.get("unknown").getArray("items").get(0).asInt(10);
+Integer absent = root.get("").getArray("").get(0).asInteger(); // null
+Device device = root.get("device").as(Device.class);
+List<Item> items = root.get("items").as(new JsonType<List<Item>>() {});
+```
+
+类型转换位于共同接口 `JsonValue`，对象、数组、根节点和 Pointer 访问都可复用。
+`asInt/asLong/asDouble/asFloat/asShort/asByte/asBoolean` 返回基本类型；
+`asString/asInteger/asBigDecimal/asBigInteger` 返回引用类型。其他可空包装类型、
+DTO、枚举和嵌套泛型统一使用 `as(Class)` / `as(JsonType)`。
+
+缺失或 JSON null 时，基本类型快捷方法返回 0/false，引用类型及泛型方法返回 null；
+快捷方法都提供显式默认值重载。默认值只作用于原始缺失/null。实际值的数字字符串、
+溢出、空字符串 coercion、日期和自定义适配器行为遵守所属 Provider 配置；
+实际转换失败会抛异常。泛型 `as` 使用包装类表达可空值，基本类型优先使用快捷方法。
+
+`getObject/getArray` 同时接受字段名和数组索引，返回非 null 的对应类型视图。
+缺失、null 和数组越界后仍可继续访问；后续访问记录完整尝试路径。直接取到的
+null 视图保留 `isNull()`，继续读取不存在的子位置得到缺失节点。缺失/null 视图
+只读，修改会失败，不会自动创建数据；实际空容器仍可修改。具名/索引类型访问会
+检查接收方和子节点的结构，类型错误会抛异常。`asObject/asArray` 是严格视图检查，
+不会把缺失/null 转为容器。
+
+通过 mapper 工厂、`readTree/toTree`、直接绑定树类型、DTO 树字段、游标和流式绑定
+创建的树使用该 mapper；嵌套访问与深复制继续保留配置。`deepCopy()` 创建新的根路径，
+插入另一棵树后使用目的位置的路径与 mapper。`as(JsonObject.class)` 是绑定转换，
+可产生独立树；`asObject()` 返回现有视图。
+`JsonValue.object/array/of` 保持无配置结构工厂语义：缺失/null 的安全访问和默认值
+仍可用，实际值转换请使用 `mapper.convert(node, type)` 或先通过 `mapper.toTree`
+生成带配置的树。这里不会隐式查找 global。
+
+### 6.4 断言、自定义异常与访问路径
+
+```java
+Integer required = root.get("a").getObject("b").get("c")
+    .requireNonNull(failure ->
+        new IllegalArgumentException(failure.displayPath() + " 不能为空"))
+    .asInteger();
+
+root.get("items").require(value -> value.size() > 0);
+```
+
+`requirePresent()` 要求位置存在，允许 JSON null；`requireNonNull()` 同时拒绝缺失/null，
+允许空字符串和空容器；`require(predicate)` 支持其他条件。成功返回当前节点。
+三种方法均可提供 `Function<JsonFailure, RuntimeException>`，工厂只在失败时执行；
+其返回的异常实例直接抛出，谓词自身抛出的异常也保持原样。工厂须返回非 null 异常。
+默认断言失败使用 `JsonException.Kind.VALIDATION`。
+
+`JsonFailure` 包含 `kind/reason/message/pointer/displayPath/cause`。
+`JsonException` 提供 `failure()`、`kind()`、`reason()`、`pointer()`、
+`displayPath()` 及标准 `getCause()`。reason 区分 MISSING、NULL、TYPE_MISMATCH、
+CONVERSION、ASSERTION；其他操作使用 UNSPECIFIED。未知位置为 null，空 Pointer 表示根。
+Pointer 的 `toString()` 返回 RFC 6901 编码，例如 `/a~1b/items/0`；
+展示路径例如 `a.items[0].id`，含特殊字符的键写为 `a["b.c"]`。
+即使中间字段已经缺失，最终断言也能报告完整访问路径。
+
+Provider 负责归一化解析、绑定、限制和 JSON I/O 错误，并保留原始 cause；
+树层将访问路径与原生转换错误的字段/数组路径拼接，不通过解析消息猜测路径。
+断言工厂的业务异常、响应式上游错误和普通 API 参数异常遵守各自的透传约定。
+在原生序列化/反序列化器内部抛出的错误仍属于 Provider 绑定边界。
+
+路径只保存不可变字段/索引段，不引用父节点；路径字符串、Pointer 和失败上下文按需生成。
+访问子节点不复制整棵树。原生绑定转换仍可能分配 token 缓冲，链式调用也会创建轻量视图，
+不能据此宣称零分配；大文档继续优先使用游标或结构事件。
 
 <a id="adapter"></a>
 ## 7. 自定义类型适配器
@@ -1071,7 +1144,7 @@ try {
 | [JsonMapper](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapper.java) | `write(Object)`、`writeBytes`、`write(Object, OutputStream/Writer)`、`writeCompact(Object, OutputStream)`；`read(String/byte[], Class/JsonType)`、`read(InputStream/Reader, JsonType)`；`convert(Object, JsonType)`；`readTree(String)`、`toTree(Object)`；工厂、游标和会话 |
 | [JsonType](../json-facade-api/src/main/java/org/jetlinks/json/JsonType.java) | 匿名泛型捕获、`of(Class/Type)`、`listOf`、`mapOf`、`type` |
 | [JsonOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonOptions.java) | 不可变共享策略与 token/记录限制 |
-| [JsonValue](../json-facade-api/src/main/java/org/jetlinks/json/JsonValue.java) | NULL/MISSING、`get/at/size`、`toJavaValue/deepCopy`、形状访问；JsonObject/JsonArray 增加对应修改操作 |
+| [JsonValue](../json-facade-api/src/main/java/org/jetlinks/json/JsonValue.java) | NULL/MISSING、`get/getObject/getArray/at`、`as(Class/JsonType)` 与标量快捷方法、`requirePresent/requireNonNull/require`、`pointer/displayPath`、`size/toJavaValue/deepCopy`；JsonObject/JsonArray 增加对应修改操作 |
 | [JsonPointer](../json-facade-api/src/main/java/org/jetlinks/json/JsonPointer.java) | RFC 6901 `of` 和解码后的 `segments` |
 | [JsonReader](../json-facade-api/src/main/java/org/jetlinks/json/JsonReader.java) / [JsonWriter](../json-facade-api/src/main/java/org/jetlinks/json/JsonWriter.java) | 同步 token 游标，调用方负责关闭 |
 | [JsonReadSession](../json-facade-api/src/main/java/org/jetlinks/json/JsonReadSession.java) | `needsInput/feed/read/endInput/close`，带状态结果 |
@@ -1082,7 +1155,7 @@ try {
 | [DataBufferJsonStreamMapper](../json-facade-spring/src/main/java/org/jetlinks/json/spring/DataBufferJsonStreamMapper.java) | `of(mapper, factory)`；输入接管的 `read/readEvents`；输出转移的 `write/writeEvents` |
 | [Reactor transport SPI](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/spi) | `JsonInputChunk` 输入租约、`JsonBufferAllocator<B>` 输出分配与转移 |
 | [SPI 包](../json-facade-api/src/main/java/org/jetlinks/json/spi) | `JsonProvider`、`JsonConfiguration`、`JsonModule`、`JsonModuleContext`、`JsonAdapter`、`JsonNativeConfiguration` |
-| [JsonException](../json-facade-api/src/main/java/org/jetlinks/json/JsonException.java) | 统一类别与原生 cause |
+| [JsonException](../json-facade-api/src/main/java/org/jetlinks/json/JsonException.java) / [JsonFailure](../json-facade-api/src/main/java/org/jetlinks/json/JsonFailure.java) | 统一类别、原因、结构化位置和原生 cause；断言异常工厂共享相同错误上下文 |
 | [Jackson2Provider](../json-facade-jackson2/src/main/java/org/jetlinks/json/jackson2/Jackson2Provider.java) | `adapt(ObjectMapper)`、`adapt(ObjectMapper, int)`：宿主原生配置快照 |
 | [JsonFacadeConfiguration](../json-facade-spring/src/main/java/org/jetlinks/json/spring/JsonFacadeConfiguration.java) | 普通 Spring 的显式配置导入；Boot 通过同模块的 AutoConfiguration 接入 |
 

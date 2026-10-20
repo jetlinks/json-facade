@@ -23,6 +23,7 @@ import org.jetlinks.json.JsonArray;
 import org.jetlinks.json.JsonObject;
 import org.jetlinks.json.JsonValue;
 import org.jetlinks.json.internal.JsonValues;
+import org.jetlinks.json.internal.JsonTreeBinding;
 import org.jetlinks.json.spi.JsonAdapter;
 import org.jetlinks.json.spi.JsonConfiguration;
 import org.jetlinks.json.spi.JsonModuleContext;
@@ -70,9 +71,15 @@ public final class Jackson3Provider implements JsonProvider {
         configuration.modules().forEach(extension -> extension.configure(context));
         builder.addModule(module);
         configuration.configureNative(builder);
+        JsonTreeBinding binding = new JsonTreeBinding();
+        var attributes = builder.defaultAttributes();
+        if (attributes == null) {
+            attributes = tools.jackson.databind.cfg.ContextAttributes.getEmpty();
+        }
+        builder.defaultAttributes(attributes.withSharedAttribute(JsonTreeBinding.class, binding));
         var mapper = builder.build();
         validateNativeConfiguration(mapper, options);
-        return new Jackson3Mapper(mapper, options);
+        return binding.initialize(new Jackson3Mapper(mapper, options));
     }
 
     private static void validateNativeConfiguration(tools.jackson.databind.json.JsonMapper mapper,
@@ -111,14 +118,24 @@ public final class Jackson3Provider implements JsonProvider {
     private static void installTree(SimpleModule module) {
         module.addDeserializer(JsonObject.class, new ValueDeserializer<>() {
             @Override
+            public JsonObject getNullValue(DeserializationContext context) {
+                return JsonValues.objectView(JsonValues.of(null, treeMapper(context)));
+            }
+
+            @Override
             public JsonObject deserialize(JsonParser input, DeserializationContext context) throws tools.jackson.core.JacksonException {
-                return JsonValue.of(context.readValue(input, Object.class)).asObject();
+                return JsonValues.of(context.readValue(input, Object.class), treeMapper(context)).asObject();
             }
         });
         module.addDeserializer(JsonArray.class, new ValueDeserializer<>() {
             @Override
+            public JsonArray getNullValue(DeserializationContext context) {
+                return JsonValues.arrayView(JsonValues.of(null, treeMapper(context)));
+            }
+
+            @Override
             public JsonArray deserialize(JsonParser input, DeserializationContext context) throws tools.jackson.core.JacksonException {
-                return JsonValue.of(context.readValue(input, Object.class)).asArray();
+                return JsonValues.of(context.readValue(input, Object.class), treeMapper(context)).asArray();
             }
         });
         module.addSerializer(JsonValue.class, new ValueSerializer<>() {
@@ -130,7 +147,7 @@ public final class Jackson3Provider implements JsonProvider {
         module.addDeserializer(JsonValue.class, new ValueDeserializer<>() {
             @Override
             public JsonValue deserialize(JsonParser input, DeserializationContext context) throws tools.jackson.core.JacksonException {
-                return JsonValue.of(context.readValue(input, Object.class));
+                return JsonValues.of(context.readValue(input, Object.class), treeMapper(context));
             }
 
             @Override
@@ -138,6 +155,10 @@ public final class Jackson3Provider implements JsonProvider {
                 return JsonValue.NULL;
             }
         });
+    }
+
+    private static JsonMapper treeMapper(DeserializationContext context) {
+        return ((JsonTreeBinding) context.getAttribute(JsonTreeBinding.class)).mapper();
     }
 
     private static final class AdapterContext implements JsonModuleContext {
