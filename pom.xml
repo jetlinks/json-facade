@@ -13,6 +13,7 @@
         <module>json-facade-jackson2</module>
         <module>json-facade-jackson3</module>
         <module>json-facade-reactor</module>
+        <module>json-facade-spring</module>
         <module>json-facade-coverage</module>
     </modules>
     <properties>
@@ -22,10 +23,19 @@
         <jackson3.version>3.0.3</jackson3.version>
         <reactor.version>3.7.18</reactor.version>
         <junit.version>5.12.2</junit.version>
+        <spring.version>6.2.19</spring.version>
+        <spring-boot.version>3.4.13</spring-boot.version>
         <argLine/>
     </properties>
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>org.springframework</groupId>
+                <artifactId>spring-framework-bom</artifactId>
+                <version>${spring.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <dependency>
                 <groupId>org.junit</groupId>
                 <artifactId>junit-bom</artifactId>

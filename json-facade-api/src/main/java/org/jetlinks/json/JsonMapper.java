@@ -12,7 +12,10 @@ import java.nio.charset.StandardCharsets;
  * @see org.jetlinks.json.spi.JsonProvider
  */
 public interface JsonMapper {
-    /** Immutable effective policies, also used by stream adapters. */
+    /** Immutable portable policies and budgets, also used by stream adapters.
+     * Native snapshot adapters retain richer native binding settings; these flags are not a full
+     * description of engine-specific inclusion, coercion or per-property rules.
+     */
     JsonOptions options();
     /** Serialize one root value. Caller owns and closes the target. */
     void write(Object value, OutputStream output);

@@ -52,6 +52,7 @@ class GlobalJsonMappersTest {
         assertThrows(NullPointerException.class, () -> globals.mapper(null));
         assertThrows(NullPointerException.class, () -> globals.register(null, mapper));
         assertThrows(NullPointerException.class, () -> globals.register(null));
+        assertThrows(NullPointerException.class, () -> globals.registerFactory(null));
         assertThrows(NullPointerException.class, () -> globals.register("valid", null));
         for (String invalid : List.of("", " ", "\t", " name", "name ", "name\n", "\u2003name")) {
             assertThrows(IllegalArgumentException.class, () -> globals.mapper(invalid));
@@ -61,6 +62,34 @@ class GlobalJsonMappersTest {
         globals.register(mapper);
         assertSame(mapper, globals.mapper("valid"));
         assertSame(mapper, globals.mapper());
+    }
+
+    @Test
+    void deferredFactoryReservesTheDefaultWithoutBuildingAndRetainsFailedFactoryForRetry() {
+        JsonMapper mapper = mapper();
+        AtomicInteger builds = new AtomicInteger();
+        JsonException failure = new JsonException(JsonException.Kind.CONFIGURATION, "not ready");
+        GlobalJsonMappers globals = new GlobalJsonMappers(() -> { throw new AssertionError("discovery"); });
+        globals.registerFactory(() -> {
+            if (builds.incrementAndGet() == 1) {
+                throw failure;
+            }
+            return mapper;
+        });
+        assertEquals(0, builds.get());
+        assertConfiguration(() -> globals.register(mapper));
+        assertConfiguration(() -> globals.registerFactory(() -> mapper));
+        assertSame(failure, assertThrows(JsonException.class, globals::mapper));
+        assertConfiguration(() -> globals.register(mapper));
+        assertSame(mapper, globals.mapper());
+        assertSame(mapper, globals.mapper());
+        assertEquals(2, builds.get());
+        assertConfiguration(() -> globals.registerFactory(() -> mapper));
+
+        GlobalJsonMappers recursive = new GlobalJsonMappers(GlobalJsonMappersTest::mapper);
+        recursive.registerFactory(recursive::mapper);
+        assertConfiguration(recursive::mapper);
+        assertConfiguration(() -> recursive.register(mapper));
     }
 
     @Test
@@ -230,10 +259,17 @@ class GlobalJsonMappersTest {
         assertEquals(JsonException.Kind.PROVIDER, failure.kind());
         assertThrows(JsonException.class, Json::defaultMapper);
         JsonMapper custom = mapper();
-        Json.registerGlobal(custom);
+        AtomicInteger builds = new AtomicInteger();
+        Json.registerGlobalFactory(() -> {
+            builds.incrementAndGet();
+            return custom;
+        });
+        assertEquals(0, builds.get());
+        assertConfiguration(() -> Json.registerGlobalFactory(() -> custom));
         Json.registerGlobal("api-fixture", custom);
         assertSame(custom, Json.global());
         assertSame(custom, Json.defaultMapper());
+        assertEquals(1, builds.get());
         assertSame(custom, Json.global("api-fixture"));
         assertConfiguration(() -> Json.registerGlobal(custom));
         assertConfiguration(() -> Json.registerGlobal("api-fixture", custom));

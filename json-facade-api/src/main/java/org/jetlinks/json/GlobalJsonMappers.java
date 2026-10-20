@@ -9,10 +9,11 @@ import java.util.function.Supplier;
  * No active resources, background work or runtime reconfiguration are owned here.
  */
 final class GlobalJsonMappers {
-    private final Supplier<JsonMapper> defaultFactory;
+    private Supplier<? extends JsonMapper> defaultFactory;
     private final ConcurrentMap<String, JsonMapper> named = new ConcurrentHashMap<>();
     private volatile JsonMapper defaultMapper;
     private boolean initializing;
+    private boolean reserved;
 
     GlobalJsonMappers(Supplier<JsonMapper> defaultFactory) {
         this.defaultFactory = Objects.requireNonNull(defaultFactory, "defaultFactory");
@@ -33,10 +34,22 @@ final class GlobalJsonMappers {
 
     synchronized void register(JsonMapper mapper) {
         Objects.requireNonNull(mapper, "mapper");
-        if (defaultMapper != null || initializing) {
-            throw configuration("Default JSON mapper is already initialized or being initialized");
-        }
+        requireUnregistered();
         defaultMapper = mapper;
+        defaultFactory = null;
+    }
+
+    synchronized void registerFactory(Supplier<? extends JsonMapper> factory) {
+        Objects.requireNonNull(factory, "factory");
+        requireUnregistered();
+        defaultFactory = factory;
+        reserved = true;
+    }
+
+    private void requireUnregistered() {
+        if (defaultMapper != null || initializing || reserved) {
+            throw configuration("Default JSON mapper is already registered or being initialized");
+        }
     }
 
     void register(String scope, JsonMapper mapper) {
@@ -56,6 +69,8 @@ final class GlobalJsonMappers {
             initializing = true;
             try {
                 defaultMapper = Objects.requireNonNull(defaultFactory.get(), "default mapper");
+                // In particular, do not keep a DI container captured by a successful factory.
+                defaultFactory = null;
             } finally {
                 // Failed construction is not a class-initialization failure or a published instance.
                 initializing = false;

@@ -4,7 +4,7 @@ For installation, configuration and end-to-end usage examples, see the [Chinese 
 
 ## Boundary and configuration
 
-The facade handles explicit JSON calls in programs: binding, conversion, tree manipulation, cursor operations and manually composed byte streams. HTTP request/response codecs, WebClient, SSE and ORM integrations use their official configuration. The library has no Spring/Netty dependency or auto-configuration. Pooled buffers are converted and released by their existing host owner.
+The facade handles explicit JSON calls in programs: binding, conversion, tree manipulation, cursor operations and manually composed byte streams. HTTP request/response codecs, WebClient, SSE and ORM integrations use their official configuration. Core API and Providers have no Spring/Netty dependency. The optional Spring module adapts the host's configured mapper; pooled buffers remain with their existing host owner.
 
 `JsonProvider` is the only engine factory SPI. `JsonModule`/`JsonAdapter` express neutral binding extensions. `JsonMapperBuilder.configureNative(Class<C>, Consumer<? super C>)` configures the selected Provider's native builder through a typed build-time callback. The immutable configuration is fully applied before publishing a mapper. Ordinary callers never receive the native mapper, and binding operations never mutate shared configuration.
 
@@ -22,9 +22,67 @@ Options define lossless untyped decimal binding, unknown properties, duplicate k
 
 `registerGlobal(scope, mapper)` publishes an already configured JsonMapper implementation under a case-sensitive name, and `global(scope)` only looks it up. Names must be non-null, nonblank and have no leading/trailing whitespace. Unknown names fail with CONFIGURATION rather than falling back or constructing a mapper. Duplicate registration, including the same instance, fails with CONFIGURATION; initialized defaults cannot be replaced. Invalid names throw IllegalArgumentException and null arguments throw NullPointerException. Each registration is independent, not an atomic multi-name transaction.
 
+`registerGlobalFactory(Supplier<? extends JsonMapper>)` reserves the default without building it. First lookup invokes the factory synchronously under the same publication coordination; one successful result is published and its factory reference is dropped. Failure preserves the original exception and permits retry of that factory, but never replacement of its reservation. A null result fails without publication. Recursive access/registration fails with CONFIGURATION. This enables DI bootstrap without constructing beans before their post-processors are registered. The factory owner must release captured short-lived state if startup fails.
+
 Scope names represent a finite set of application-lifetime configurations, not request/tenant IDs or implicit Reactor/ThreadLocal context. Global references live with the ClassLoader loading Json and strongly retain the registered implementation and its adapters. There is no replacement, reset, unregister, background task or automatic close protocol; short-lived plugins and isolated applications should own and inject ordinary builder-created instances. Custom implementations must obey JsonMapper's thread-safety and operation/resource contracts. This configuration registry owns no live sessions and adds no MBean or per-operation tracing; the host owns application-level configuration observation.
 
 Implementation scope is limited to the API's shared-instance management, its concurrency/lifecycle tests, real-Provider assembly tests and usage documentation. Provider parsing, Reactor composition and resource-release algorithms remain unchanged; existing large-document evidence applies to those paths.
+
+## Spring adapter and native snapshots
+
+`json-facade-spring` supports Spring Framework 6 / Spring Boot 3 with Jackson 2.
+Boot discovers `JsonFacadeAutoConfiguration`; plain Spring imports
+`JsonFacadeConfiguration`. The core remains independent of Spring. This adapter
+does not support Boot 4 / Jackson 3 or Gson, and does not infer an engine from HTTP
+converter ordering. It selects the unique or primary managed `ObjectMapper` using
+Spring's type resolution. Missing/ambiguous candidates fail; no mapper is silently
+constructed from Provider discovery. A host-defined `JsonMapper` bean takes
+precedence and must be a singleton when used as the global default.
+
+The static `SpringJsonBootstrap` bean registers a facade definition only after
+ordinary bean definitions are available. Its bean-factory callback reserves the
+global factory before normal singleton creation without creating native beans.
+First global access resolves the fully initialized facade bean; singleton
+completion also resolves it to surface startup errors. Ordinary business-bean
+initialization can use the default. Native mapper/customizer/host facade
+construction cannot depend on that same global: Spring circular-dependency or
+facade recursive-initialization errors are propagated. As with other early
+configuration, calls before this callback (including other bean-factory
+post-processors) cannot rely on Spring registration.
+
+`json.facade.global-enabled=false` leaves the global untouched and keeps an
+injectable facade. `json.facade.enabled=false` disables Boot auto-configuration.
+`json.facade.max-value-bytes` defaults to 8 MiB and configures incremental-record
+bytes on the adapted facade. An existing global reservation or initialized default
+fails startup rather than being replaced. Named configurations stay explicit.
+Closing the context never resets the ClassLoader-owned default. Repeated/isolated
+contexts must disable global registration and inject context-owned instances.
+After failed startup, the reservation remains but the disposable bootstrap drops
+its BeanFactory reference; a lookup then fails as a closed context rather than
+retaining/restarting it. Successful publication also drops factory references.
+
+`Jackson2Provider.adapt(ObjectMapper[, int maxValueBytes])` is a reusable,
+framework-independent snapshot factory. Native modules, mixins, naming, dates,
+coercion and full inclusion settings (`NON_EMPTY`, custom filters, content/type/
+property rules) are retained through native `copy()`. Custom serializers/handlers
+are shared according to Jackson's copy semantics and must be thread-safe. Source
+configuration and factory flags are unchanged; subsequent source changes are not
+followed. Copy-unsupported subclasses and non-JSON factories fail at adaptation.
+Spring handler instantiators and custom serializers may themselves retain container
+dependencies; a globally registered snapshot therefore has application/ClassLoader
+lifetime and is not an unloadable context snapshot.
+
+The snapshot installs neutral tree support, requires single-root binding, disables
+source/target auto-close, incomplete-container repair and source-in-location.
+Native read/write depth limits are aligned to their minimum; remaining native
+read constraints are preserved. `options()` reports the imported native binding
+flags and effective budgets. Its `omitNulls` flag recognizes global value
+inclusion `NON_NULL`, `NON_ABSENT`, `NON_EMPTY`, `NON_DEFAULT`; it is not a full
+description of custom filters or content/type/property inclusion. Arbitrary native
+inclusion is preserved, not reduced to this flag. Ordinary builder construction
+still uses authoritative `JsonOptions` and rejects conflicting native callbacks.
+Existing Provider streaming implementations are reused. This configuration-only
+adapter changes no HTTP codec and adds no tracing, background executor or MBean.
 
 ## Types, tree and cursors
 
@@ -82,8 +140,10 @@ Framing and selection live in `json-facade-api/src/main/java/org/jetlinks/json/i
 Reproducible opt-in measurements (after the build):
 
 ```sh
-# Full 1 GiB logical documents, both engines, 128/256 MiB heaps.
+# Full 1 GiB logical documents, both engines and adapted Jackson 2, 128/256 MiB heaps.
 python3 scripts/run-streaming-stress.py
+# Select the native snapshot path only.
+python3 scripts/run-streaming-stress.py --engines 2-adapted --heaps 128
 # Chunk-boundary/slow-demand coverage with smaller logical documents.
 python3 scripts/run-streaming-stress.py --mib 16 --heaps 128 --chunks 64 65536
 # Retain closed wrappers; their former buffers exceed the 64 MiB heap / 32 MiB direct-memory limits.
@@ -96,9 +156,11 @@ python3 scripts/run-streaming-benchmarks.py
 
 The stress harness lazily generates source bytes, requests one record/chunk at a time and validates input records without collecting them. Output is independently checked with a native nonblocking parser, including trailing metadata. It reports bytes, records, elapsed time, first-signal latency, cumulative thread allocation, GC time, current heap and the sum of heap-pool peaks. Pool peaks need not occur simultaneously and are not a precise process RSS measurement. JMH uses separate forks and GC profiling; its microbenchmarks do not imply production/network throughput.
 
-`ResourceReleaseStress` retains 64 closed owners per fork while their former buffers exceed a 64 MiB heap or 32 MiB direct-memory limit. Both engines cover heap/direct input sessions, standalone readers/writers, malformed input, failing output flush and discarded segmented queues. The fixture uses allocation pressure and reachability fences, without explicit GC or private-field inspection. It verifies bounded retention even when callers keep a closed facade reachable.
+`ResourceReleaseStress` retains 64 closed owners per fork while their former buffers exceed a 64 MiB heap or 32 MiB direct-memory limit. Both engines and the adapted Jackson 2 configuration cover heap/direct input sessions, standalone readers/writers, malformed input, failing output flush and discarded segmented queues. The fixture uses allocation pressure and reachability fences, without explicit GC or private-field inspection. It verifies bounded retention even when callers keep a closed facade reachable.
 
-Java 17 and 21 each pass the full 112-test quality gate, including native configuration and global-instance regressions. Shared-instance tests cover concurrent publication, initialization failure/reentry, custom defaults, named isolation, ambiguous Provider discovery and actual-engine/reactive use. Global usage examples also compile and run in independent JVMs on both Java versions. The prior native-configuration update passes both engines' six 16 MiB streaming modes under a 128 MiB maximum heap and all 16 closed-resource forks. Prior validation of the unchanged streaming and resource paths covers at least 1 GiB per document in all six modes with 128/256 MiB maximum heaps, plus 64 B/64 KiB input chunks. Historical JFR recordings of 1 GiB array output and structured document copying under a 128 MiB maximum heap show approximately 3.8–6.6 MiB live after GC. The linked PR records source versions, measured allocation comparisons and delivery evidence.
+Java 17 and 21 each pass the full 129-test quality gate. Spring tests cover actual Boot auto-configuration/customization, native post-processing, early business initialization, unique/primary selection, host override, opt-out, startup failure, prototype rejection, circular dependency and ClassLoader-lifetime behavior. A separate process verifies plain Spring without any Boot artifact. Native snapshot tests cover inclusion filters, modules/mixins, independent source configuration, limits, neutral trees and IO ownership. Shared-instance regressions retain concurrent publication, failure/reentry, explicit defaults and named isolation coverage.
+
+The adapted Jackson 2 path passes all six modes with at least 1 GiB per document under a 128 MiB heap, plus all eight closed-resource forks, on Java 17 and 21. Its 64 B/64 KiB chunk-boundary matrix also passes with 16 MiB documents. Prior validation of unchanged ordinary Provider streaming/resource paths covers both engines, all six GiB modes with 128/256 MiB heaps, and the same input chunk boundaries. Historical JFR recordings of 1 GiB array output and structured document copying under a 128 MiB heap show approximately 3.8–6.6 MiB live after GC. The linked PR records source versions, measured allocation comparisons and delivery evidence; these historical measurements do not assert throughput for Spring applications.
 
 Review and CI entry: [jetlinks/json-facade#1](https://github.com/jetlinks/json-facade/pull/1).
 

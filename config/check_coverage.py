@@ -10,7 +10,8 @@ from decimal import Decimal
 
 def verify(path):
     report = ET.parse(path).getroot()
-    expected = {"json-facade-api", "json-facade-jackson2", "json-facade-jackson3", "json-facade-reactor"}
+    expected = {"json-facade-api", "json-facade-jackson2", "json-facade-jackson3",
+                "json-facade-reactor", "json-facade-spring"}
     actual = {group.attrib["name"] for group in report.findall("group")}
     if actual != expected:
         raise SystemExit(f"Missing or unexpected coverage modules: {actual ^ expected}")

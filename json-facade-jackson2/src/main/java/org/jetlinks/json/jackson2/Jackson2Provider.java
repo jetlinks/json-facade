@@ -2,6 +2,7 @@ package org.jetlinks.json.jackson2;
 
 import java.io.IOException;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Set;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonFactory;
@@ -14,6 +15,7 @@ import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.JsonSerializer;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.module.SimpleModule;
@@ -30,10 +32,71 @@ import org.jetlinks.json.spi.JsonModuleContext;
 import org.jetlinks.json.spi.JsonProvider;
 
 /** ServiceLoader provider for Jackson 2. All configuration precedes mapper publication.
- * No Spring integration, global mapper or late mutation.
+ * Native adaptation copies host configuration before enforcing facade resource contracts.
  * @since 1.0.0
  */
 public final class Jackson2Provider implements JsonProvider {
+    /** Snapshot an already configured JSON mapper, including native modules and inclusion policies.
+     * The source and its factory are never mutated. Custom serializers/handlers are shared as in
+     * ObjectMapper.copy() and must be thread-safe; subsequent source configuration is not followed.
+     * @param source fully configured JSON mapper supporting ObjectMapper.copy()
+     * @return independent facade with the default materialized-value byte budget
+     * @since 1.0.0
+     * @see #adapt(ObjectMapper, int)
+     */
+    public static JsonMapper adapt(ObjectMapper source) {
+        return adapt(source, JsonOptions.DEFAULT.maxValueBytes());
+    }
+
+    /** Snapshot native binding settings while enforcing facade IO and structural contracts.
+     * Native read/write depth limits are aligned to their minimum. Other native read constraints
+     * remain intact. options() reports native flags and budgets; omitNulls reports recognized
+     * global value-inclusion policies, not content/type/property/custom-filter inclusion details.
+     * @param source fully configured JSON mapper; non-JSON factories are unsupported
+     * @param maxValueBytes positive byte budget for a materialized incremental record
+     * @return thread-safe facade; caller-owned IO stays open and reads require one complete root
+     * @throws JsonException with CONFIGURATION kind if native copying or adaptation fails
+     * @since 1.0.0
+     */
+    public static JsonMapper adapt(ObjectMapper source, int maxValueBytes) {
+        Objects.requireNonNull(source, "source");
+        if (maxValueBytes < 1) {
+            throw new IllegalArgumentException("maxValueBytes must be positive");
+        }
+        require("JSON".equals(source.getFactory().getFormatName()), "JSON format required for adaptation");
+        try {
+            ObjectMapper snapshot = source.copy();
+            JsonFactory factory = snapshot.getFactory();
+            int depth = Math.min(factory.streamReadConstraints().getMaxNestingDepth(),
+                    factory.streamWriteConstraints().getMaxNestingDepth());
+            factory.setStreamReadConstraints(factory.streamReadConstraints().rebuild()
+                    .maxNestingDepth(depth).build());
+            factory.setStreamWriteConstraints(factory.streamWriteConstraints().rebuild()
+                    .maxNestingDepth(depth).build());
+            factory.disable(JsonParser.Feature.AUTO_CLOSE_SOURCE);
+            factory.disable(JsonParser.Feature.INCLUDE_SOURCE_IN_LOCATION);
+            factory.disable(JsonGenerator.Feature.AUTO_CLOSE_TARGET);
+            factory.disable(JsonGenerator.Feature.AUTO_CLOSE_JSON_CONTENT);
+            snapshot.enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+            snapshot.registerModule(treeModule());
+            var limits = factory.streamReadConstraints();
+            var inclusion = snapshot.getSerializationConfig().getDefaultPropertyInclusion().getValueInclusion();
+            boolean omitNulls = switch (inclusion) {
+                case NON_NULL, NON_ABSENT, NON_EMPTY, NON_DEFAULT -> true;
+                default -> false;
+            };
+            JsonOptions options = new JsonOptions(
+                    snapshot.isEnabled(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS),
+                    snapshot.isEnabled(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES),
+                    factory.isEnabled(StreamReadFeature.STRICT_DUPLICATE_DETECTION), omitNulls,
+                    snapshot.isEnabled(SerializationFeature.INDENT_OUTPUT), depth,
+                    limits.getMaxStringLength(), limits.getMaxNumberLength(), maxValueBytes);
+            return new Jackson2Mapper(snapshot, options);
+        } catch (RuntimeException error) {
+            throw new JsonException(JsonException.Kind.CONFIGURATION, "Cannot adapt native JSON mapper", error);
+        }
+    }
+
     @Override
     public String id() {
         return "jackson2";
@@ -64,9 +127,7 @@ public final class Jackson2Provider implements JsonProvider {
                 options.omitNulls() ? JsonInclude.Include.NON_NULL : JsonInclude.Include.ALWAYS));
         SimpleModule module = new SimpleModule("json-facade");
         module.setSerializers(new ExactSerializers());
-        SimpleModule treeModule = new SimpleModule("json-facade-tree");
-        installTree(treeModule);
-        builder.addModule(treeModule);
+        builder.addModule(treeModule());
         JsonModuleContext context = new AdapterContext(module);
         configuration.modules().forEach(extension -> extension.configure(context));
         builder.addModule(module);
@@ -109,7 +170,8 @@ public final class Jackson2Provider implements JsonProvider {
         }
     }
 
-    private static void installTree(SimpleModule module) {
+    private static SimpleModule treeModule() {
+        SimpleModule module = new SimpleModule("json-facade-tree");
         module.addDeserializer(JsonObject.class, new JsonDeserializer<>() {
             @Override
             public JsonObject deserialize(JsonParser input, DeserializationContext context) throws IOException {
@@ -139,6 +201,7 @@ public final class Jackson2Provider implements JsonProvider {
                 return JsonValue.NULL;
             }
         });
+        return module;
     }
 
     private static final class AdapterContext implements JsonModuleContext {

@@ -1,5 +1,7 @@
 package org.jetlinks.json;
 
+import java.util.function.Supplier;
+
 /** Entry point for immutable mapper construction and application-lifetime shared instances.
  * Global registration accepts fully configured, thread-safe implementations and never replaces them.
  * References live with this class's ClassLoader; short-lived owners should inject their own instances.
@@ -42,12 +44,26 @@ public final class Json {
     /** Publish a configured default before its first successful lookup or registration.
      * The caller finishes configuration first; registration does not build, mutate or close it.
      * @param mapper thread-safe implementation obeying JsonMapper's operation/resource contracts
-     * @throws JsonException with CONFIGURATION kind if the default is already initialized
+     * @throws JsonException with CONFIGURATION kind if the default is already registered or initialized
      * @since 1.0.0
      * @see JsonMapperBuilder#build()
      */
     public static void registerGlobal(JsonMapper mapper) {
         GLOBALS.register(mapper);
+    }
+
+    /** Reserve the default before dependency-injection beans are created, without creating a mapper.
+     * The factory runs synchronously on first lookup, at most once successfully, and must return a
+     * fully configured, thread-safe mapper. Failed lookups retain the factory for retry; reservation
+     * remains write-once even after failure. Recursive lookups fail with CONFIGURATION. The factory
+     * reference is released after successful publication; no replacement or reset is provided.
+     * @param factory application-lifetime factory; must not recursively access the default
+     * @throws JsonException with CONFIGURATION kind if already registered or initialized
+     * @since 1.0.0
+     * @see #registerGlobal(JsonMapper)
+     */
+    public static void registerGlobalFactory(Supplier<? extends JsonMapper> factory) {
+        GLOBALS.registerFactory(factory);
     }
 
     /** Publish one configured implementation under a stable application-lifetime name.

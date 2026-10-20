@@ -14,10 +14,11 @@ Documentation: [完整中文使用手册](docs/user-guide.md) · [Public contrac
 | `json-facade-jackson2` | Jackson 2 Provider | API, Jackson 2 |
 | `json-facade-jackson3` | Jackson 3 Provider | API, Jackson 3 |
 | `json-facade-reactor` | Reactive byte[] / ByteBuffer operations | API, reactor-core |
+| `json-facade-spring` | Optional Spring 6 / Boot 3 default-mapper bridge | Jackson 2 Provider, Spring Context; Boot optional |
 | `json-facade-tck` | Reusable real-engine contract tests | API, JUnit (test utility) |
 | `json-facade-coverage` | Aggregated execution data and coverage gate | Build only |
 
-Add `org.jetlinks:json-facade-api` and one Provider to your application. Add `json-facade-reactor` only when reactive streams are needed. The library does not register Spring beans, replace HTTP codecs, or configure ORM mappers.
+Add `org.jetlinks:json-facade-api` and one Provider to your application. Add `json-facade-reactor` only when reactive streams are needed. The optional Spring module registers a facade bean from Spring's configured Jackson 2 mapper; HTTP codecs and ORM mappers retain their official configuration.
 
 ## Binding and generic types
 
@@ -50,6 +51,12 @@ var payload = Json.global("partner-input").read(input, Payload.class);
 ```
 
 `partnerOptions`, `partnerModule` and `Payload` are application-defined. Native configuration is also applied through the ordinary builder before registration; any thread-safe `JsonMapper` implementation may be registered. `defaultMapper()` returns the same default as `global()`. Duplicate registration or an unknown name fails; there is no fallback, replacement or reset. Global references live with the API ClassLoader, so use finite configuration names and keep short-lived plugin instances host-owned. See [instance management](docs/user-guide.md#provider).
+
+## Spring default
+
+In Boot 3, add `org.jetlinks:json-facade-spring`. Auto-configuration adapts the unique or primary Spring `ObjectMapper` and makes its facade bean available through `Json.global()`, including during ordinary business-bean initialization. A host-defined singleton `JsonMapper` bean takes precedence. Plain Spring 6 imports `org.jetlinks.json.spring.JsonFacadeConfiguration` explicitly.
+
+The adapter copies the native mapper's configuration, including modules, mixins, naming, dates and inclusion policies. It preserves the source bean and enforces facade IO/single-root contracts on the copy. It does not track later source changes. Set `json.facade.global-enabled=false` for repeated/isolated contexts and inject `JsonMapper`; globals have ClassLoader lifetime and cannot be reset at context close. `json.facade.enabled=false` disables Boot auto-configuration entirely. See the [Spring guide](docs/user-guide.md#spring).
 
 ## Reactive streams
 

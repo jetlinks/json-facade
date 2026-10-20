@@ -8,13 +8,10 @@ import java.lang.ref.Reference;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
-import org.jetlinks.json.Json;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonReadOptions;
 import org.jetlinks.json.JsonType;
-import org.jetlinks.json.jackson2.Jackson2Provider;
-import org.jetlinks.json.jackson3.Jackson3Provider;
 
 /** Bounded-heap regression: retain closed owners while their former buffers exceed the heap.
  * Each process has 64 MiB heap / 32 MiB direct memory; no explicit GC or private-field inspection.
@@ -30,8 +27,7 @@ public final class ResourceReleaseStress {
     public static void main(String[] args) {
         String engine = args[0];
         String mode = args[1];
-        JsonMapper mapper = Json.builder().provider(engine.equals("2")
-                ? new Jackson2Provider() : new Jackson3Provider()).build();
+        JsonMapper mapper = StreamingStress.mapper(engine);
         List<Object> closed = new ArrayList<>();
         for (int i = 0; i < OWNERS; i++) {
             closed.add(switch (mode) {

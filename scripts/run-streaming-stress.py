@@ -29,7 +29,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mib", type=int, default=1024)
     parser.add_argument("--heaps", nargs="+", type=int, default=[128, 256])
-    parser.add_argument("--engines", nargs="+", choices=["2", "3"], default=["2", "3"])
+    parser.add_argument("--engines", nargs="+", choices=["2", "3", "2-adapted"],
+                        default=["2", "3", "2-adapted"])
     parser.add_argument("--chunks", nargs="+", type=int, default=[8192])
     parser.add_argument("--jfr-dir", type=Path)
     parser.add_argument("--modes", nargs="+", default=[

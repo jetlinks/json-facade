@@ -10,6 +10,7 @@ import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.async.ByteArrayFeeder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jetlinks.json.Json;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonPointer;
@@ -37,8 +38,7 @@ public final class StreamingStress {
         String mode = args[1];
         long targetBytes = Long.parseLong(args[2]) * 1024 * 1024;
         int chunkSize = Integer.parseInt(args[3]);
-        JsonMapper mapper = Json.builder().provider(engine.equals("2")
-                ? new Jackson2Provider() : new Jackson3Provider()).build();
+        JsonMapper mapper = mapper(engine);
         JsonStreamMapper streams = JsonStreamMapper.of(mapper);
         byte[] row = mapper.writeBytes(VALUE);
         long records = (targetBytes + row.length) / (row.length + 1);
@@ -99,6 +99,12 @@ public final class StreamingStress {
                 engine, mode, chunkSize, bytes, records, (System.nanoTime() - started) / 1_000_000.0,
                 allocated() - allocated, peak, ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed(),
                 gc, (check.first - started) / 1000.0, Runtime.getRuntime().maxMemory());
+    }
+
+    static JsonMapper mapper(String engine) {
+        return engine.equals("2-adapted") ? Jackson2Provider.adapt(new ObjectMapper())
+                : Json.builder().provider(engine.equals("2")
+                ? new Jackson2Provider() : new Jackson3Provider()).build();
     }
 
     private static long allocated() {

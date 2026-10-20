@@ -7,6 +7,7 @@
 - [1. 选择合适的入口](#choose)
 - [2. 安装与快速开始](#start)
 - [3. Provider 与实例管理](#provider)
+  - [Spring 默认配置接入](#spring)
 - [4. 通用配置与限制](#options)
 - [5. 对象绑定、泛型与转换](#binding)
 - [6. JsonObject、JsonArray 与路径访问](#tree)
@@ -26,7 +27,7 @@
 <a id="choose"></a>
 ## 1. 选择合适的入口
 
-门面用于应用主动发起的 JSON 操作。它不自动注册 Spring Bean，也不接管 HTTP、WebClient、SSE 或 ORM 的 JSON 配置；这些集成仍由对应框架负责。
+门面用于应用主动发起的 JSON 操作。可选的 Spring 模块可以把框架已有的 Jackson 2 配置适配为门面默认实例；HTTP、WebClient、SSE 或 ORM 的 JSON 配置仍由对应框架负责。
 
 | 业务需求 | 推荐入口 | 物化单位 |
 | --- | --- | --- |
@@ -176,6 +177,8 @@ boolean sameDefault = Json.global() == Json.defaultMapper(); // true
 
 默认构建失败不会发布半成品或使 Json 类永久初始化失败；错误保持原有类别，宿主仍可构建正确实例后显式注册。初始化回调不能递归获取或注册正在构建的默认实例。
 
+容器集成可以调用 `Json.registerGlobalFactory(factory)` 提前保留默认位置，第一次 `global()` 再同步创建实例。注册时不执行工厂；成功后释放工厂引用。工厂失败后允许重试同一个工厂，但已保留的位置不能被替换；这与未显式注册时的默认发现失败不同。工厂不能递归获取默认实例。应用的 Spring 接入应使用下面的适配模块。
+
 ### 3.3 按配置名称注册实现
 
 ```java
@@ -206,6 +209,41 @@ JsonStreamMapper partnerStreams = JsonStreamMapper.of(selected);
 全局引用与加载 Json 类的 ClassLoader 同寿命，并强引用实现及其适配器；不提供 reset、替换、注销或自动 close。scope 应是应用启动时已知的有限配置名称，不能直接使用请求、设备或动态租户 ID。它不自动读取 ThreadLocal 或 Reactor Context。
 
 容器中可将全局配置查询结果注入业务，热点链路持有实例即可。需要可卸载插件、多应用隔离或局部测试状态时，优先由宿主持有普通 Builder 创建的实例，不注册到父 ClassLoader 的全局表。reader/writer/session 仍按操作创建，不能注册为共享状态。
+
+<a id="spring"></a>
+### 3.5 使用 Spring 的默认 JSON 配置
+
+适配模块支持 Spring Framework 6 / Spring Boot 3 的 Jackson 2 `ObjectMapper`。Boot 4 / Jackson 3、Gson 尚未纳入此模块；它按 Spring Bean 的唯一候选或 `@Primary` 规则选 mapper，不扫描 HTTP converter 推测引擎。
+
+Boot 应用添加以下依赖即可；它已传递依赖 API 和 Jackson 2 Provider。Reactor 模块仍按需添加。
+
+```xml
+<dependency>
+    <groupId>org.jetlinks</groupId>
+    <artifactId>json-facade-spring</artifactId>
+    <version>${json-facade.version}</version>
+</dependency>
+```
+
+Boot 自动配置创建一个可注入的 `JsonMapper`，并提前保留全局默认位置。业务方法或普通业务 Bean 的初始化回调中可直接调用 `Json.global()`；它与注入的门面 Bean 是同一个实例。源 `ObjectMapper` 完成所有 Spring 初始化和 BeanPostProcessor 后才被适配。原生 mapper、其 customizer 和宿主门面 Bean 的构造过程不能反过来依赖这个全局实例，否则会形成循环依赖。`main` 中容器创建前、BeanFactoryPostProcessor 等更早阶段也不能依赖此注册。
+
+门面复制 Spring mapper 的原生配置，保留 `spring.jackson.*`、模块、自定义序列化器、mixin、命名、日期、强制转换和 null/空值策略，包括 `NON_EMPTY` 和自定义过滤器。它不修改源 Bean，也不跟随源后续变更。副本强制单根读取、不关闭调用者 IO、不自动补全未完成容器，并安装中立树支持。因此它遵守门面资源契约，不能用来改变 Spring 的 HTTP codec。
+
+Spring 的原生数字、未知字段、美化等策略被继承，可能与 `JsonOptions.DEFAULT` 不同。读写深度取原生两个上限的较小值，其余原生读取限制保留；增量记录字节预算另行配置。`options().omitNulls()` 只概括可识别的全局 value inclusion，不能描述 content/type/property 规则或自定义过滤器，完整原生行为仍保留。共享的自定义 serializer/handler 应符合 Jackson 自身的线程安全要求。
+
+| 配置 | 默认值 | 行为 |
+| --- | --- | --- |
+| `json.facade.enabled` | `true` | 仅 Boot：是否启用整个自动配置 |
+| `json.facade.global-enabled` | `true` | 是否注册 `Json.global()`；关闭后仍提供可注入 Bean |
+| `json.facade.max-value-bytes` | `8388608` | 适配 mapper 的增量记录字节预算；普通同步整值不受此项限制 |
+
+应用自行声明 `JsonMapper` Bean 时优先使用该 Bean，无须另外提供原生 mapper；多门面 Bean 也须满足唯一或 primary 规则，全局门面必须是 singleton。原生 Bean 缺失/歧义、全局已被注册/初始化都会明确失败。提供宿主门面时，其配置由宿主负责，字节预算属性不再应用。
+
+普通 Spring 应用需要可用的 Jackson 2 `ObjectMapper` Bean，并在自己的配置类上添加 `@Import(org.jetlinks.json.spring.JsonFacadeConfiguration.class)`；不需要 Spring Boot 依赖。建议只在应用根上下文导入适配配置。
+
+全局与 API ClassLoader 同寿命，关闭 ApplicationContext 不会 reset。原生 Spring handler 或自定义 serializer 也可能持有容器依赖，不能把全局快照当作可卸载上下文。多上下文、测试上下文重建、插件卸载场景设置 `json.facade.global-enabled=false`，直接注入各自的门面。若启动失败，注册位置仍保留，但 bootstrap 会释放失效 BeanFactory 的引用，再次获取时报告上下文已关闭；重建应用须使用隔离的 API ClassLoader。
+
+非 Spring 宿主也可以使用 `org.jetlinks.json.jackson2.Jackson2Provider.adapt(nativeMapper)` 或 `adapt(nativeMapper, maxValueBytes)` 创建配置快照，再按需注册到默认或命名位置。源 mapper 必须使用 JSON 工厂并支持原生 `copy()`；这不是逐次调用时的配置复制。
 
 <a id="options"></a>
 ## 4. 通用配置与限制
@@ -882,7 +920,7 @@ try {
 
 | API | 用途与关键重载 |
 | --- | --- |
-| [Json](../json-facade-api/src/main/java/org/jetlinks/json/Json.java) | `builder`、`global()`、`global(String)`、`registerGlobal(JsonMapper)`、`registerGlobal(String, JsonMapper)`、`defaultMapper` |
+| [Json](../json-facade-api/src/main/java/org/jetlinks/json/Json.java) | `builder`、`global()`、`global(String)`、`registerGlobal(JsonMapper)`、`registerGlobal(String, JsonMapper)`、`registerGlobalFactory`、`defaultMapper` |
 | [JsonMapperBuilder](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapperBuilder.java) | `provider(String/JsonProvider)`、`classLoader`、`options`、`module`、`configureNative`、`build` |
 | [JsonMapper](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapper.java) | `write(Object)`、`writeBytes`、`write(Object, OutputStream/Writer)`、`writeCompact(Object, OutputStream)`；`read(String/byte[], Class/JsonType)`、`read(InputStream/Reader, JsonType)`；`convert(Object, JsonType)`；`readTree(String)`、`toTree(Object)`；工厂、游标和会话 |
 | [JsonType](../json-facade-api/src/main/java/org/jetlinks/json/JsonType.java) | 匿名泛型捕获、`of(Class/Type)`、`listOf`、`mapOf`、`type` |
@@ -896,5 +934,7 @@ try {
 | [JsonStreamMapper](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/JsonStreamMapper.java) | `readBytes/readBuffers/readEvents/readBufferEvents`；`writeBytes/writeBuffers/writeEvents/writeEventBuffers` |
 | [SPI 包](../json-facade-api/src/main/java/org/jetlinks/json/spi) | `JsonProvider`、`JsonConfiguration`、`JsonModule`、`JsonModuleContext`、`JsonAdapter`、`JsonNativeConfiguration` |
 | [JsonException](../json-facade-api/src/main/java/org/jetlinks/json/JsonException.java) | 统一类别与原生 cause |
+| [Jackson2Provider](../json-facade-jackson2/src/main/java/org/jetlinks/json/jackson2/Jackson2Provider.java) | `adapt(ObjectMapper)`、`adapt(ObjectMapper, int)`：宿主原生配置快照 |
+| [JsonFacadeConfiguration](../json-facade-spring/src/main/java/org/jetlinks/json/spring/JsonFacadeConfiguration.java) | 普通 Spring 的显式配置导入；Boot 通过同模块的 AutoConfiguration 接入 |
 
 源码工程的标准质量验证为 `mvn -B -ntp verify`，包含两套真实引擎 TCK、Reactor 契约、编译告警门禁、Checkstyle、SpotBugs 和每生产模块至少 80% 分支覆盖率；CI 在 Java 17/21 上运行。手册中业务方法返回 Publisher/Mono，由宿主统一订阅；测试或独立 main 可以在终端边界等待结果，不应把这种等待复制到响应式业务链中。
