@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SegmentedJsonOutputTest {
     @Test
     void budgetIsCheckedBeforeAppendingAndFullSegmentsKeepTheirStorage() {
-        SegmentedJsonOutput output = new SegmentedJsonOutput(2, 5, () -> false);
+        var output = new SegmentedJsonOutput<>(2, 5, () -> false, ByteArrayAllocator.INSTANCE);
         output.beginUnit(0);
         byte[] value = "\"中\"".getBytes(StandardCharsets.UTF_8);
         output.write(value, 0, value.length);
@@ -20,26 +20,26 @@ class SegmentedJsonOutputTest {
         assertEquals(JsonException.Kind.LIMIT,
                 assertThrows(JsonException.class, () -> output.write('!')).kind());
         output.seal();
-        assertArrayEquals(new byte[]{value[0], value[1]}, output.poll());
-        assertArrayEquals(new byte[]{value[2], value[3]}, output.poll());
-        assertArrayEquals(new byte[]{value[4]}, output.poll());
+        assertArrayEquals(new byte[]{value[0], value[1]}, output.poll().take());
+        assertArrayEquals(new byte[]{value[2], value[3]}, output.poll().take());
+        assertArrayEquals(new byte[]{value[4]}, output.poll().take());
         assertNull(output.poll());
         output.beginUnit(0);
         output.write('[');
         assertThrows(JsonException.class, () -> output.write(value, 0, value.length));
         output.seal();
-        byte[] retained = output.poll();
+        byte[] retained = output.poll().take();
         output.beginUnit(0);
         output.write(']');
         output.seal();
         assertArrayEquals(new byte[]{'['}, retained);
-        assertArrayEquals(new byte[]{']'}, output.poll());
+        assertArrayEquals(new byte[]{']'}, output.poll().take());
     }
 
     @Test
     void cancellationDiscardsPendingAndFutureWritesWithoutRetainingBuffers() {
         java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
-        SegmentedJsonOutput output = new SegmentedJsonOutput(1, 1, cancelled::get);
+        var output = new SegmentedJsonOutput<>(1, 1, cancelled::get, ByteArrayAllocator.INSTANCE);
         output.beginUnit(0);
         output.write('a');
         cancelled.set(true);

@@ -16,6 +16,7 @@
 - [9. 同步游标与文件处理](#cursor)
 - [10. Reactor 流式读取](#read-stream)
 - [11. Reactor 分块写出](#write-stream)
+  - [Netty ByteBuf 支持](#netty)
 - [12. 复杂结构的事件流](#events)
 - [13. 手动增量解析会话](#session)
 - [14. 资源、线程与内存所有权](#ownership)
@@ -40,6 +41,7 @@
 | `{meta, data:{items:[...]}, summary}` 中的条目 | JSON Pointer selection | 一个选中元素 |
 | 保留全部层级，复制或生成超大复杂文档 | `readEvents/writeEvents` | 一个 token 或 `value` 事件 |
 | 自有事件循环，不引入 Reactor | `readSession/eventSession` | 一个结果 |
+| Netty 池化输入输出 | `NettyJsonStreamMapper` | 当前输入租约、token/绑定值和输出段 |
 
 流式处理能够避免收集整个聚合文档。单个 POJO、字符串或数字仍须在对应操作中完整处理；例如 1 GiB 的记录数组可以逐条处理，一个 1 GiB 的字符串不能靠切输入块变成小 token。
 
@@ -669,6 +671,70 @@ Flux<ByteBuffer> ndjsonBuffers = streams.writeBuffers(items,
 
 背压控制下游可见的段，不会把任意 POJO 的原生序列化暂停在任意字节处。一个有界 POJO 会完整同步编码为自有分段，再逐段交付；需更细粒度推进大型聚合时使用事件结构。错误和取消不会补正常的数组结束括号，已经发出的字节无法回滚；多个 SINGLE_VALUE 的错误也可能发生在第一条字节发出之后。
 
+<a id="netty"></a>
+### 11.1 Netty ByteBuf 支持
+
+增加 `org.jetlinks:json-facade-netty:${json-facade.version}`，它传递依赖 Reactor
+适配器和 Netty buffer/common，运行时不依赖 Reactor Netty。当前验证版本为
+Netty `4.1.138.Final`；下面的网络例子使用宿主已有的 Reactor Netty。
+
+```java
+import org.jetlinks.json.netty.NettyJsonStreamMapper;
+
+NettyJsonStreamMapper netty = NettyJsonStreamMapper.of(mapper, outbound.alloc());
+Flux<Item> items = netty.read(inbound.receive(), JsonType.of(Item.class),
+    JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
+// receive() 会释放自己的引用；read() 会持有并最终释放另一个引用。
+// 在解析之后组合业务异步处理，避免把未 retain 的 ByteBuf 放进异步队列。
+return outbound.send(netty.write(items,
+    new JsonWriteOptions(JsonWriteOptions.Format.ARRAY, 8192, 8 * 1024 * 1024)));
+```
+
+`read/readEvents` 借用输入，在输入交付的 onNext 内 retain 一个引用。源仍负责
+释放自己的原始引用；直接传入 `receive()` 即可，不要再额外调用 `retain()`。
+普通 `Publisher<ByteBuf>` 若把一个引用交给订阅者释放，使用
+`readOwned/readOwnedEvents`，适配器消费这个引用，调用方不再释放它：
+
+```java
+Flux<ByteBuf> owned = Flux.defer(() -> Flux.just(
+    Unpooled.copiedBuffer("[1,2]", StandardCharsets.UTF_8)));
+Flux<Integer> values = netty.readOwned(owned, JsonType.of(Integer.class),
+    JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
+```
+
+源负责尚未交付的缓冲区，包括自己队列内的丢弃。若确实要在解析之前增加
+`publishOn`，必须在该边界之前 retain，在队列上配置相应的 discard 清理，
+然后交给 `readOwned`；解析之后的业务异步处理通常更直接。retain 仅保证内存
+存活，不隔离并发修改；在租约释放前，不能改写底层字节或复合缓冲区组件。
+
+输入支持 heap/direct、slice、只读缓冲区和 composite，保持 reader/writer index。
+复合输入按 NIO 组件推进，不合并为连续数组；不能暴露 NIO view 的自定义
+ByteBuf 明确失败。解析完成、失败或取消后释放适配器拥有的引用；若取消发生
+在 native/自定义回调中，回调返回后才关闭解析器、释放其输入。
+
+`write/writeEvents` 直接写入传入 allocator 分配的有界 ByteBuf，保留其 heap/direct
+偏好。尾段调整 readable range，不复制裁剪。每个发出的段转移一个引用给下游；
+`outbound.send` 接管被接受的段。普通消费端须在使用后 release，并为自己增加的
+异步队列等配置 discard 清理：
+
+```java
+Flux<ByteBuf> buffers = netty.write(items,
+        JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY))
+    .publishOn(outputScheduler, 8)
+    .doOnDiscard(ByteBuf.class, ByteBuf::release);
+return outbound.send(buffers);
+```
+
+复杂文档可直接使用 `netty.writeEvents(netty.readEvents(inbound.receive()), options)`，
+options 使用 `SINGLE_VALUE`，也可按第 12 节逐个构造事件。数组、NDJSON、根值序列、
+Pointer selection 和绑定策略与普通 Reactor 入口一致。网络协议仍须提供正确的
+文档边界/EOF；TCP 单次 read、ByteBuf 或输出段均不代表一个完整 JSON 文档。
+
+输入省掉门面整块复制；输出省掉中间 byte[] 分段和尾部裁剪，但原生 generator
+编码缓冲区写入 ByteBuf 仍有一次复制，token 解码/Java 对象绑定也仍有分配。
+池化内存的 reserved 大小与仍被引用的 pinned 大小不同；小记录、heap/direct 和
+真实网络栈的收益应分别测量。
+
 <a id="events"></a>
 ## 12. 复杂结构的事件流
 
@@ -785,7 +851,9 @@ VALUE 可携带 Java null，不能据此判断 EOF。只有真实输入结束才
 | Reactor 输入 `ByteBuffer` | 在适配器自己的输入 onNext 内立即复制 remaining 区域，该调用返回后可复用源存储 |
 | 手动 session 的 `ByteBuffer` | 借用到下次 needsInput 或 close，期间不能改底层字节 |
 | 输出 `byte[]` / `ByteBuffer` | 库拥有独立存储并转交下游，不再复用；ByteBuffer 只读且 cursor 独立，无 release |
-| Netty ByteBuf / Spring DataBuffer | 门面不推断 retain/release；宿主在转换、交付和释放时保证生命周期 |
+| Netty 输入 ByteBuf | `read` 借用并 retain；`readOwned` 消费一个转移引用；解析终止后释放适配器拥有的引用 |
+| Netty 输出 ByteBuf | 发出时转移一个引用；下游负责使用后的 release 以及自己队列/过滤的 discard |
+| Spring DataBuffer | 普通 ByteBuffer 入口不推断 retain/release；宿主负责转换与生命周期 |
 
 如果在进入 `readBuffers` 前使用 `publishOn` 等异步边界，宿主必须保证队列中的原始内存一直有效到适配器实际收到它；立即复制不能保护尚未到达适配器的字节。直接构造只读 view 也不能隔离可复用的底层内存。
 
@@ -838,11 +906,36 @@ python3 scripts/run-resource-release-stress.py
 
 # JMH 吞吐、累计分配和 GC 分析。
 python3 scripts/run-streaming-benchmarks.py
+
+# Netty：两种 Provider，heap/direct，每文档至少 1 GiB；128 MiB 堆/32 MiB direct。
+python3 scripts/run-netty-stress.py
+python3 scripts/run-netty-stress.py --release-only
+python3 scripts/run-streaming-benchmarks.py --netty
 ```
 
 六种场景包括根数组读取、NDJSON 读取、包装数组选择、数组写出、NDJSON 写出和复杂文档事件复制。框架按需生成并验证数据，不收集整个文档；输出独立校验结构和尾部元数据。可用 `JSON_STRESS_JAVA` 指定压力测试 JVM。
 
 当前实现已有至少 1 GiB 聚合文档的受限堆验证。它证明这些测试场景的有界处理能力，不保证任意大 POJO、单 token 或所有并发量都使用固定内存。累计分配、GC 后存活堆、各内存池峰值之和和 RSS 是不同指标；微基准吞吐也不等同于生产网络吞吐。具体证据及源码版本见 [验证契约](contracts.md#implementation-and-validation) 与 [PR](https://github.com/jetlinks/json-facade/pull/1)。
+
+### 15.4 Netty 的实测取舍
+
+Java 21 的 JMH 矩阵在相同文档上比较 byte[]、复制 ByteBuffer 和池化 ByteBuf，
+覆盖两个 Provider、heap/direct、20/4096 字符 payload、8 KiB chunk，
+每组两个独立 fork，预热 3 次、测量 4 次，每次 300 ms，使用 GC profiler。
+源数据准备和网络/TLS 不计入计时；小 payload 每操作 1000 条，大 payload 256 条。
+
+| payload | Netty 输入相对复制 ByteBuffer 的堆分配减少 | Netty 输出相对 byte[] 的堆分配减少 |
+| --- | --- | --- |
+| 20 字符 | 约 4% | 约 18% |
+| 4096 字符 | 约 44% | 约 95% |
+
+分配减少不等于耗时同比下降：这组小记录写出平均耗时增加约 50%–74%，部分大记录
+direct 写出也较慢。已拥有不可变 byte[] 的输入本来就不复制，没有必要先包装为
+Netty 来追求同样的收益。适配器更适合已经使用 ByteBuf、记录较大或 GC 压力明显
+的链路；按实际负载选择 allocator，并用上面的脚本复测。这些数值是本地微基准，
+不是端到端网络性能承诺。受限内存验证覆盖 Java 17/21、两种 Provider、heap/direct
+及每文档至少 1 GiB 的数组读写、Pointer selection、复杂结构复制，结束时均要求
+零 pinned bytes；相应运行入口见上一节。
 
 <a id="errors"></a>
 ## 16. 错误处理与常见问题
@@ -931,10 +1024,12 @@ try {
 | [JsonReadSession](../json-facade-api/src/main/java/org/jetlinks/json/JsonReadSession.java) | `needsInput/feed/read/endInput/close`，带状态结果 |
 | [JsonReadOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonReadOptions.java) / [JsonWriteOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonWriteOptions.java) | 每操作分帧、选择、null 和记录/分段预算 |
 | [JsonEvent](../json-facade-api/src/main/java/org/jetlinks/json/JsonEvent.java) | 不可变结构事件和有界 Java 值 |
-| [JsonStreamMapper](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/JsonStreamMapper.java) | `readBytes/readBuffers/readEvents/readBufferEvents`；`writeBytes/writeBuffers/writeEvents/writeEventBuffers` |
+| [JsonStreamMapper](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/JsonStreamMapper.java) | 字节/ByteBuffer 读写和结构事件；`readChunks/readChunkEvents/writeChunks/writeEventChunks` 用于 transport SPI |
+| [NettyJsonStreamMapper](../json-facade-netty/src/main/java/org/jetlinks/json/netty/NettyJsonStreamMapper.java) | `of(mapper, allocator)`；`read/readOwned/readEvents/readOwnedEvents`；`write/writeEvents` |
+| [Reactor transport SPI](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/spi) | `JsonInputChunk` 输入租约、`JsonBufferAllocator<B>` 输出分配与转移 |
 | [SPI 包](../json-facade-api/src/main/java/org/jetlinks/json/spi) | `JsonProvider`、`JsonConfiguration`、`JsonModule`、`JsonModuleContext`、`JsonAdapter`、`JsonNativeConfiguration` |
 | [JsonException](../json-facade-api/src/main/java/org/jetlinks/json/JsonException.java) | 统一类别与原生 cause |
 | [Jackson2Provider](../json-facade-jackson2/src/main/java/org/jetlinks/json/jackson2/Jackson2Provider.java) | `adapt(ObjectMapper)`、`adapt(ObjectMapper, int)`：宿主原生配置快照 |
 | [JsonFacadeConfiguration](../json-facade-spring/src/main/java/org/jetlinks/json/spring/JsonFacadeConfiguration.java) | 普通 Spring 的显式配置导入；Boot 通过同模块的 AutoConfiguration 接入 |
 
-源码工程的标准质量验证为 `mvn -B -ntp verify`，包含两套真实引擎 TCK、Reactor 契约、编译告警门禁、Checkstyle、SpotBugs 和每生产模块至少 80% 分支覆盖率；CI 在 Java 17/21 上运行。手册中业务方法返回 Publisher/Mono，由宿主统一订阅；测试或独立 main 可以在终端边界等待结果，不应把这种等待复制到响应式业务链中。
+源码工程的标准质量验证为 `mvn -B -ntp verify`，包含两套真实引擎 TCK、Reactor 契约、Netty 引用计数与 TCP 集成、编译告警门禁、Checkstyle、SpotBugs 和每生产模块至少 80% 分支覆盖率；CI 在 Java 17/21 上运行。手册中业务方法返回 Publisher/Mono，由宿主统一订阅；测试或独立 main 可以在终端边界等待结果，不应把这种等待复制到响应式业务链中。

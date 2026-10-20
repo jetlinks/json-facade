@@ -22,6 +22,10 @@ jobs:
         run: python3 scripts/run-streaming-stress.py --mib 8 --heaps 128 --chunks 64 8192 > target/streaming-smoke.jsonl
       - name: Closed resource heap and direct-memory regression
         run: python3 scripts/run-resource-release-stress.py > target/resource-release.jsonl
+      - name: Pooled Netty streaming and reference-release regression
+        run: |
+          python3 scripts/run-netty-stress.py --mib 8 --chunks 64 8192 > target/netty-streaming.jsonl
+          python3 scripts/run-netty-stress.py --release-only > target/netty-release.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -34,3 +38,5 @@ jobs:
             **/target/checkstyle-result.xml
             target/streaming-smoke.jsonl
             target/resource-release.jsonl
+            target/netty-streaming.jsonl
+            target/netty-release.jsonl

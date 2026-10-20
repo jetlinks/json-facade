@@ -5,28 +5,30 @@ import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonWriteOptions;
 import org.jetlinks.json.JsonWriter;
+import org.jetlinks.json.reactor.spi.JsonBufferAllocator;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.SynchronousSink;
 
 /** One compact generator/context per subscription. Each synchronous write unit is byte bounded. */
-final class WriteSessionResource extends OperationResource {
+final class WriteSessionResource<B> extends OperationResource {
     private final JsonWriteOptions.Format format;
-    private final SegmentedJsonOutput output;
+    private final SegmentedJsonOutput<B> output;
     private JsonWriter writer;
     private DocumentState document;
     // Only one concatMap inner subscribes at a time; queued bytes stay in the owned output.
-    private final Flux<byte[]> drain = Flux.generate(this::emit);
+    // Disable generator fusion so cancellation cannot strand a polled transport reference.
+    private final Flux<OutputSegment<B>> drain = Flux.<OutputSegment<B>>generate(this::emit).hide();
     private long records;
 
-    WriteSessionResource(JsonMapper mapper, JsonWriteOptions options, boolean events) {
+    WriteSessionResource(JsonMapper mapper, JsonWriteOptions options, boolean events, JsonBufferAllocator<B> allocator) {
         format = options.format();
-        output = new SegmentedJsonOutput(options.chunkSize(),
-                Math.min(options.maxValueBytes(), mapper.options().maxValueBytes()), this::cancelled);
+        output = new SegmentedJsonOutput<>(options.chunkSize(),
+                Math.min(options.maxValueBytes(), mapper.options().maxValueBytes()), this::cancelled, allocator);
         writer = mapper.compactWriter(output);
         document = events ? new DocumentState(mapper.options()) : null;
     }
 
-    Flux<byte[]> start() {
+    Flux<OutputSegment<B>> start() {
         if (acquire()) {
             try {
                 output.beginUnit(0);
@@ -41,7 +43,7 @@ final class WriteSessionResource extends OperationResource {
         return drain;
     }
 
-    Flux<byte[]> encode(Object value) {
+    Flux<OutputSegment<B>> encode(Object value) {
         if (acquire()) {
             try {
                 if (format == JsonWriteOptions.Format.SINGLE_VALUE && records != 0) {
@@ -67,7 +69,7 @@ final class WriteSessionResource extends OperationResource {
         return drain;
     }
 
-    Flux<byte[]> event(JsonEvent event) {
+    Flux<OutputSegment<B>> event(JsonEvent event) {
         if (acquire()) {
             try {
                 output.beginUnit(document.prefixBytes(event));
@@ -80,7 +82,7 @@ final class WriteSessionResource extends OperationResource {
         return drain;
     }
 
-    Flux<byte[]> finish() {
+    Flux<OutputSegment<B>> finish() {
         if (acquire()) {
             try {
                 output.beginUnit(0);
@@ -99,12 +101,12 @@ final class WriteSessionResource extends OperationResource {
         return drain;
     }
 
-    private void emit(SynchronousSink<byte[]> sink) {
+    private void emit(SynchronousSink<OutputSegment<B>> sink) {
         if (!acquire()) {
             sink.complete();
             return;
         }
-        byte[] bytes;
+        OutputSegment<B> bytes;
         try {
             bytes = output.poll();
         } finally {
@@ -126,10 +128,13 @@ final class WriteSessionResource extends OperationResource {
     @Override
     protected void closeOwned() {
         // Closing a failed/cancelled generator may flush bytes, but must not publish or retain them.
-        output.discard();
         JsonWriter owned = writer;
         writer = null;
         document = null;
-        owned.close();
+        try {
+            output.discard();
+        } finally {
+            owned.close();
+        }
     }
 }

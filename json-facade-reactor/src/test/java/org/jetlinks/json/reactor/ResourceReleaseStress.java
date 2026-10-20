@@ -93,7 +93,7 @@ public final class ResourceReleaseStress {
     }
 
     private static Object queue() {
-        var output = new SegmentedJsonOutput(1, 256 * 1024, () -> false);
+        var output = new SegmentedJsonOutput<>(1, 256 * 1024, () -> false, ByteArrayAllocator.INSTANCE);
         output.beginUnit(0);
         output.write(new byte[256 * 1024], 0, 256 * 1024);
         output.discard();

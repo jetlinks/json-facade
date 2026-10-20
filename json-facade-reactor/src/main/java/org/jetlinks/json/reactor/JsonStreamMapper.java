@@ -6,6 +6,8 @@ import org.jetlinks.json.JsonEvent;
 import org.jetlinks.json.JsonReadOptions;
 import org.jetlinks.json.JsonType;
 import org.jetlinks.json.JsonWriteOptions;
+import org.jetlinks.json.reactor.spi.JsonBufferAllocator;
+import org.jetlinks.json.reactor.spi.JsonInputChunk;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 
@@ -39,6 +41,15 @@ public interface JsonStreamMapper {
     /** Event input with the same immediate-copy ownership as readBuffers. */
     Flux<JsonEvent> readBufferEvents(Publisher<? extends ByteBuffer> input);
 
+    /** Read transferred transport leases without copying their bytes. Each delivered lease is closed
+     * after consumption, or after active parser cleanup on error/cancellation. Upstream owns undelivered
+     * leases and its queues; bytes must stay stable until close. No source retain/release is inferred.
+     */
+    <T> Flux<T> readChunks(Publisher<? extends JsonInputChunk> input, JsonType<T> type, JsonReadOptions options);
+
+    /** Structural input with the same transferred-lease ownership as readChunks. */
+    Flux<JsonEvent> readChunkEvents(Publisher<? extends JsonInputChunk> input);
+
     /** Encode records compactly with bounded owned segments and demand-driven chunks.
      * On error/cancel, no successful closing bracket is appended; emitted bytes cannot be rolled back.
      * Output arrays are independently owned, never reused by this library.
@@ -56,4 +67,14 @@ public interface JsonStreamMapper {
 
     /** Structural output with independent read-only ByteBuffer cursors. */
     Flux<ByteBuffer> writeEventBuffers(Publisher<? extends JsonEvent> events, JsonWriteOptions options);
+
+    /** Encode into transport-allocated segments. Publication transfers buffer ownership to downstream,
+     * which releases consumed buffers and any queues/discards it introduces. Unpublished buffers are
+     * released by this adapter. The allocator is shared; buffers and native state are per subscription.
+     */
+    <B> Flux<B> writeChunks(Publisher<?> values, JsonWriteOptions options, JsonBufferAllocator<B> allocator);
+
+    /** Structural output with the same transfer/cleanup contract as writeChunks. */
+    <B> Flux<B> writeEventChunks(Publisher<? extends JsonEvent> events, JsonWriteOptions options,
+                                JsonBufferAllocator<B> allocator);
 }

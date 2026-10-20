@@ -14,11 +14,12 @@ Documentation: [完整中文使用手册](docs/user-guide.md) · [Public contrac
 | `json-facade-jackson2` | Jackson 2 Provider | API, Jackson 2 |
 | `json-facade-jackson3` | Jackson 3 Provider | API, Jackson 3 |
 | `json-facade-reactor` | Reactive byte[] / ByteBuffer operations | API, reactor-core |
+| `json-facade-netty` | Optional retained ByteBuf input and allocated segmented output | Reactor adapter, Netty buffer/common |
 | `json-facade-spring` | Optional Spring 6 / Boot 3 default-mapper bridge | Jackson 2 Provider, Spring Context; Boot optional |
 | `json-facade-tck` | Reusable real-engine contract tests | API, JUnit (test utility) |
 | `json-facade-coverage` | Aggregated execution data and coverage gate | Build only |
 
-Add `org.jetlinks:json-facade-api` and one Provider to your application. Add `json-facade-reactor` only when reactive streams are needed. The optional Spring module registers a facade bean from Spring's configured Jackson 2 mapper; HTTP codecs and ORM mappers retain their official configuration.
+Add `org.jetlinks:json-facade-api` and one Provider to your application. Add `json-facade-reactor` for ordinary reactive streams, or `json-facade-netty` for reference-counted buffers. The optional Spring module registers a facade bean from Spring's configured Jackson 2 mapper; HTTP codecs and ORM mappers retain their official configuration.
 
 ## Binding and generic types
 
@@ -84,6 +85,21 @@ Byte arrays are owned immutable chunks after publication. ByteBuffer input is co
 The adapter honors demand, preserves Reactor Context, and uses no internal subscription, blocking I/O or forced Scheduler. Each subscription gets a fresh parser; cancelling closes it and cancels its source. Total memory includes the current source chunk, a bounded materialized record and the engine's constrained token buffers. A source must still supply reasonably sized chunks. Serialization buffers owned segments for one bounded value, using a reusable native generator. Huge documents can stream their structure without a whole-document tree; each scalar/bound value remains constrained.
 
 Reactor cannot emit Java null. Null records fail by default, may be explicitly skipped, or can be retained as the non-null `JsonValue.NULL` node. Empty array output is `[]`; empty NDJSON output has zero bytes. An error never appends a successful closing bracket.
+
+## Netty buffers
+
+`NettyJsonStreamMapper.of(mapper, channelAllocator)` shares the same configuration,
+formats and structural-event behavior. `read`/`readEvents` retain borrowed input
+during delivery, so Reactor Netty `receive()` can be passed directly. `readOwned`/
+`readOwnedEvents` consume one transferred reference instead. Both preserve buffer
+indices and process composite NIO views without merging input bytes.
+
+`write`/`writeEvents` emit allocated ByteBuf segments. Publication transfers one
+reference downstream: Reactor Netty `send()` owns buffers accepted for writing;
+other consumers release them and clean their own queues/discards. Cancellation
+releases unpublished segments after active operations return. Native generator
+bytes still copy into those segments, so this is not end-to-end zero-copy JSON.
+See [Netty usage and ownership](docs/user-guide.md#netty) before adding async queues.
 
 ## Trees and structured documents
 

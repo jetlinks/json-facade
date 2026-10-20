@@ -4,7 +4,7 @@ For installation, configuration and end-to-end usage examples, see the [Chinese 
 
 ## Boundary and configuration
 
-The facade handles explicit JSON calls in programs: binding, conversion, tree manipulation, cursor operations and manually composed byte streams. HTTP request/response codecs, WebClient, SSE and ORM integrations use their official configuration. Core API and Providers have no Spring/Netty dependency. The optional Spring module adapts the host's configured mapper; pooled buffers remain with their existing host owner.
+The facade handles explicit JSON calls in programs: binding, conversion, tree manipulation, cursor operations and manually composed byte streams. HTTP request/response codecs, WebClient, SSE and ORM integrations use their official configuration. Core API and Providers have no Spring/Netty dependency. The optional Spring module adapts the host's configured mapper; the optional Netty module explicitly adapts pooled-buffer ownership.
 
 `JsonProvider` is the only engine factory SPI. `JsonModule`/`JsonAdapter` express neutral binding extensions. `JsonMapperBuilder.configureNative(Class<C>, Consumer<? super C>)` configures the selected Provider's native builder through a typed build-time callback. The immutable configuration is fully applied before publishing a mapper. Ordinary callers never receive the native mapper, and binding operations never mutate shared configuration.
 
@@ -83,6 +83,91 @@ inclusion is preserved, not reduced to this flag. Ordinary builder construction
 still uses authoritative `JsonOptions` and rejects conflicting native callbacks.
 Existing Provider streaming implementations are reused. This configuration-only
 adapter changes no HTTP codec and adds no tracing, background executor or MBean.
+
+## Netty buffers and ownership
+
+The optional `json-facade-netty` module targets Netty 4.1 buffers and
+reuses `json-facade-reactor`. Core API, Providers and ordinary Reactor usage keep
+their dependency boundaries. JSON syntax, token constraints, native binding and
+configuration remain Provider responsibilities. The adapter owns only transport
+memory.
+
+The adapter eliminates whole-input-chunk copies and intermediate output
+arrays at the facade/Netty boundary. Jackson 2.22.3 source and Jackson 3.0.3
+bytecode confirm their nonblocking ByteBuffer feeders retain the supplied buffer
+rather than copying the whole chunk. Token decoding and Java binding still
+allocate. Native generators encode into their own buffers and write to an
+OutputStream; copying those bytes into a pooled ByteBuf remains necessary with
+these supported APIs. Network/TLS/kernel behavior is outside this guarantee.
+
+The application entry point is
+`NettyJsonStreamMapper.of(mapper, allocator)`, with record `read`/`write` and
+structural `readEvents`/`writeEvents` operations. Reading uses the existing
+`JsonType`/`JsonReadOptions`; writing uses `JsonWriteOptions`. The allocator is
+explicit so callers can reuse the channel allocator and choose pooled heap or
+direct buffers. Runtime dependencies include Netty buffer/common; Reactor Netty
+is used for integration tests and examples, not required by the adapter.
+
+Input has two explicit ownership contracts:
+
+- Default `read` and `readEvents` borrow each published ByteBuf and synchronously
+  retain one adapter-owned reference during input delivery. This supports direct
+  use with Reactor Netty `receive()`, which releases its own reference after
+  delivery. The source owner remains responsible for its original reference;
+  callers must keep published bytes stable while the retained lease is active.
+- `readOwned` and `readOwnedEvents` accept transfer of one existing reference per
+  delivered buffer, for sources whose buffers belong to the subscriber. They do
+  not add another retain. Undelivered source buffers remain the source's
+  responsibility. Already retained Reactor Netty input uses this contract.
+
+Neither contract changes reader/writer indices. Single-component buffers expose
+a view of their readable region. Composite buffers expose their component NIO
+views sequentially without consolidation or `nioBuffer()` merging. Buffers that
+cannot expose NIO views fail explicitly rather than silently copying. Each owned
+reference is released exactly once after all its views have been consumed or
+after parser cleanup on failure/cancellation. Cancellation during an active
+native/user callback defers release until that operation returns. Retain protects
+lifetime, not concurrent mutation; async boundaries before adapter delivery are
+the upstream owner's responsibility.
+
+Output uses allocator-owned, bounded ByteBuf segments directly as the generator's
+OutputStream target. Sealing advances the readable range without copying a short
+tail. Publication transfers one reference to downstream; Reactor Netty `send`
+owns buffers accepted for writing. Other consumers release emitted buffers and
+arrange cleanup for queues/discards they introduce. The adapter releases only
+its current/queued/unpublished buffers, including cancellation races and failed
+serialization. It never releases an already transferred reference. Native flush
+on failed/cancelled close cannot create retained output. One bound value remains
+a synchronous, byte-budgeted write unit; event output streams aggregate structure.
+
+Reactor's `spi.JsonInputChunk` transfers a closeable lease exposing successive
+ByteBuffer views; `spi.JsonBufferAllocator<B>` allocates, writes, seals and releases
+output storage. `readChunks`/`readChunkEvents` and `writeChunks`/`writeEventChunks`
+compose these extension points using the same state machines as ordinary streams.
+Existing readBuffers keeps its immediate-copy
+contract. Framing, structural validation, byte budgets, demand, exception handling
+and OperationResource cancellation coordination are shared rather than copied
+into a Netty-specific parser/serializer. No source aggregation, internal
+subscription, forced scheduler, HTTP codec replacement or native generator fork
+is introduced. The host retains tracing and allocator observation; this adapter adds
+no background resource or separate global buffer pool/MBean.
+
+Validation covers both real Providers; heap/direct/sliced/read-only/composite
+buffers; multibyte tokens across components; source EOF/errors; slow demand;
+all formats, pointer selection and structural events; indices and exact refCnt
+ownership; parse/serialization failures; queued discards; cancellation including
+an active callback; and actual Reactor Netty receive/send integration.
+`scripts/run-netty-stress.py` generates input directly into pooled buffers and
+independently validates output with a native parser, requesting one item at a time.
+Its default matrix streams at least 1 GiB per document with 128 MiB heap / 32 MiB
+direct memory; `--release-only` retains closed owners whose former storage exceeds
+those limits. Each run requires zero remaining pinned bytes.
+`scripts/run-streaming-benchmarks.py --netty` compares copying ByteBuffer, owned
+byte arrays and Netty paths using equal documents/chunk sizes and JMH GC profiling.
+Allocator pinned-memory evidence complements heap allocation measurements; pooled
+reserved memory is not itself a leak. Heap/direct and small/large record results
+determine recommendations; direct memory is not assumed faster. These measurements
+exclude network/TLS work.
 
 ## Types, tree and cursors
 

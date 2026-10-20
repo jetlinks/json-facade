@@ -3,6 +3,7 @@
 import argparse
 import os
 from pathlib import Path
+import re
 import runpy
 import subprocess
 
@@ -22,6 +23,7 @@ DEPS = {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", default=str(ROOT / "target" / "benchmarks" / "results.json"))
+    parser.add_argument("--netty", action="store_true", help="Compare ordinary and pooled Netty paths")
     args, extra = parser.parse_known_args()
     for artifact, path in DEPS.items():
         if not (M2 / path).is_file():
@@ -30,15 +32,20 @@ def main():
     generated = ROOT / "target" / "benchmarks" / "generated"
     classes.mkdir(parents=True, exist_ok=True)
     generated.mkdir(parents=True, exist_ok=True)
-    cp = os.pathsep.join([str(classes), STRESS["classpath"]()] + [str(M2 / path) for path in DEPS.values()])
+    base_cp = runpy.run_path(str(ROOT / "scripts" / "run-netty-stress.py"))["classpath"]() \
+        if args.netty else STRESS["classpath"]()
+    fixture = "NettyStreamBenchmark" if args.netty else "StreamBenchmark"
+    cp = os.pathsep.join([str(classes), base_cp] + [str(M2 / path) for path in DEPS.values()])
     subprocess.run(["javac", "-cp", cp, "-d", str(classes), "-s", str(generated),
-                    str(ROOT / "benchmarks" / "StreamBenchmark.java")], check=True, cwd=ROOT)
+                    str(ROOT / "benchmarks" / f"{fixture}.java")], check=True, cwd=ROOT)
     defaults = [
         ("-f", "2"), ("-wi", "3"), ("-i", "4"), ("-w", "300ms"), ("-r", "300ms"),
         ("-jvmArgs", "-Xms512m -Xmx512m"), ("-prof", "gc"), ("-rf", "json"), ("-rff", args.result),
     ]
     options = [item for flag, value in defaults if flag not in extra for item in (flag, value)]
-    subprocess.run(["java", "-cp", cp, "org.openjdk.jmh.Main", "StreamBenchmark.run"]
+    package = "netty" if args.netty else "reactor"
+    benchmark = f"org.jetlinks.json.{package}.{fixture}.run"
+    subprocess.run(["java", "-cp", cp, "org.openjdk.jmh.Main", "^" + re.escape(benchmark) + "$"]
                    + options + extra, check=True, cwd=ROOT)
 
 

@@ -10,6 +10,11 @@
     <dependencies>
         <dependency>
             <groupId>org.jetlinks</groupId>
+            <artifactId>json-facade-netty</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetlinks</groupId>
             <artifactId>json-facade-spring</artifactId>
             <version>${project.version}</version>
         </dependency>
