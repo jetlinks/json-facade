@@ -40,10 +40,35 @@ import reactor.core.publisher.BaseSubscriber;
 import reactor.test.StepVerifier;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JsonStreamMapperTest {
+    @Test
+    void ambiguousDefaultDiscoveryCanBeConfiguredAndNamedMappersKeepIndependentPolicies() {
+        JsonException failure = assertThrows(JsonException.class, Json::global);
+        assertEquals(JsonException.Kind.PROVIDER, failure.kind());
+        JsonOptions d = JsonOptions.DEFAULT;
+        JsonOptions strict = new JsonOptions(true, true, true, false, true,
+                d.maxDepth(), d.maxStringLength(), d.maxNumberLength(), d.maxValueBytes());
+        JsonMapper configured = Json.builder().provider("jackson2").options(strict).build();
+        JsonMapper named = Json.builder().provider("jackson3").build();
+        Json.registerGlobal(configured);
+        Json.registerGlobal("stream-jackson3", named);
+        assertSame(configured, Json.global());
+        assertSame(configured, Json.defaultMapper());
+        assertSame(named, Json.global("stream-jackson3"));
+        assertThrows(JsonException.class, () -> Json.global().read("{\"a\":1,\"a\":2}", Map.class));
+        assertEquals(Map.of("a", 2), Json.global("stream-jackson3").read("{\"a\":1,\"a\":2}", Map.class));
+        JsonStreamMapper streams = JsonStreamMapper.of(Json.global());
+        StepVerifier.create(streams.readBytes(Flux.just(bytes("[1,2]")), JsonType.of(Integer.class),
+                JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS))).expectNext(1, 2).verifyComplete();
+        assertEquals("[{\"value\":1}]", join(streams.writeBytes(Flux.just(Map.of("value", 1)),
+                JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY))));
+        assertTrue(Json.global().write(Map.of("value", 1)).contains("\n"));
+    }
+
     @ParameterizedTest
     @MethodSource("providers")
     void recordIdentityScopeDoesNotRetainPreviouslyWrittenObjects(JsonProvider provider) {

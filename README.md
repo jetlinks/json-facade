@@ -36,6 +36,21 @@ var values = mapper.read("[{\"count\":3}]",
 
 Built mappers are immutable and safe to share. Construct configuration before publishing the instance. Each reader, writer and incremental session has its own state. Supplied InputStream/Reader/OutputStream/Writer remain caller-owned.
 
+## Default and named configurations
+
+`Json.global()` returns the shared default mapper directly. Configure it before first use, or let it lazily discover one unambiguous Provider. Register independent configurations under stable application names:
+
+```java
+Json.registerGlobal(Json.builder().provider("jackson2").build());
+Json.registerGlobal("partner-input", Json.builder().provider("jackson2")
+    .options(partnerOptions).module(partnerModule).build());
+
+String json = Json.global().write(value);
+var payload = Json.global("partner-input").read(input, Payload.class);
+```
+
+`partnerOptions`, `partnerModule` and `Payload` are application-defined. Native configuration is also applied through the ordinary builder before registration; any thread-safe `JsonMapper` implementation may be registered. `defaultMapper()` returns the same default as `global()`. Duplicate registration or an unknown name fails; there is no fallback, replacement or reset. Global references live with the API ClassLoader, so use finite configuration names and keep short-lived plugin instances host-owned. See [instance management](docs/user-guide.md#provider).
+
 ## Reactive streams
 
 ```java

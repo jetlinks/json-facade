@@ -56,6 +56,13 @@ class Jackson3ContractTest extends JsonMapperContract {
         assertEquals("{\"native_name\":\"n\"}", json.write(new Name("n")));
         assertEquals(new Name("n"), json.read("{\"native_name\":\"n\"}", Name.class));
         assertEquals("\"native:v\"", json.write(new NativeValue("v")));
+        Json.registerGlobal(json);
+        Json.registerGlobal("native-fixture", json);
+        assertSame(json, Json.global());
+        assertSame(json, Json.defaultMapper());
+        assertSame(json, Json.global("native-fixture"));
+        assertEquals("\"native:v\"", Json.global().write(new NativeValue("v")));
+        assertEquals("{\"native_name\":\"n\"}", Json.global("native-fixture").write(new Name("n")));
         assertEquals(3, Json.defaultMapper().read("3", Integer.class));
     }
 

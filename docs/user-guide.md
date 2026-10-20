@@ -126,6 +126,8 @@ import reactor.core.publisher.Mono;
 <a id="provider"></a>
 ## 3. Provider 与实例管理
 
+### 3.1 显式构建与 Provider 选择
+
 ```java
 // 按 ServiceLoader 发现的 id 选择。
 JsonMapper mapper = Json.builder().provider("jackson2").build();
@@ -146,7 +148,64 @@ JsonMapper isolated = Json.builder()
 
 `JsonMapper` 构建完成后可跨线程共享。构建器属于装配过程，不应并发修改；reader、writer、session 和可变树均按操作创建。为不同业务构建不同实例，例如外部严格入站配置和内部兼容读取配置，构建后通过依赖注入共享；不要每条消息重新构建。
 
-`Json.defaultMapper()` 是惰性默认实例，同样要求唯一可发现的 Provider。容器或多场景项目优先注入明确配置的实例，避免默认发现结果依赖运行时类路径。
+### 3.2 全局默认实例与自定义配置
+
+`Json.global()` 直接返回共享 JsonMapper，`Json.defaultMapper()` 返回同一个默认实例。小程序可以直接使用无参入口，首次访问会惰性发现恰好一个 Provider。类路径中有多个引擎时，先明确构建并注册默认实现。
+
+应用需要自定义配置时，在任何业务首次获取默认实例前完成注册；通用选项、中立模块和原生配置都使用已有 Builder。下面的注册应在应用启动阶段执行一次：
+
+```java
+JsonOptions d = JsonOptions.DEFAULT;
+JsonOptions strict = new JsonOptions(d.losslessNumbers(), true, true,
+    d.omitNulls(), d.pretty(), d.maxDepth(), d.maxStringLength(),
+    d.maxNumberLength(), d.maxValueBytes());
+
+JsonMapper configured = Json.builder().provider("jackson2")
+    .options(strict)
+    .configureNative(com.fasterxml.jackson.databind.json.JsonMapper.Builder.class,
+        nativeBuilder -> nativeBuilder.propertyNamingStrategy(
+            com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE))
+    .build();
+Json.registerGlobal(configured);
+
+String json = Json.global().write(Map.of("status", "ready"));
+boolean sameDefault = Json.global() == Json.defaultMapper(); // true
+```
+
+门面不会接管框架中已有的 mapper；也可以将宿主自己实现的、遵守 JsonMapper 线程与资源契约的实例直接传入 `registerGlobal`。注册只发布该实例，不重建、不改配置。
+
+默认构建失败不会发布半成品或使 Json 类永久初始化失败；错误保持原有类别，宿主仍可构建正确实例后显式注册。初始化回调不能递归获取或注册正在构建的默认实例。
+
+### 3.3 按配置名称注册实现
+
+```java
+JsonMapper partnerInput = Json.builder().provider("jackson2")
+    .options(strict).build(); // strict 沿用上一段的通用选项
+Json.registerGlobal("partner-input", partnerInput);
+Json.registerGlobal("legacy-data", Json.builder().provider("jackson3").build());
+
+JsonMapper selected = Json.global("partner-input");
+JsonStreamMapper partnerStreams = JsonStreamMapper.of(selected);
+```
+
+名字区分大小写，不能为 null、空白或包含首尾空白。无参默认位置独立于所有名称，包括名为 `"default"` 的配置。`global(name)` 只查询，不会在缺失时创建、复制或退回默认配置。
+
+| 操作 | 行为 |
+| --- | --- |
+| 注册已经初始化的默认实例 | `CONFIGURATION` 失败，不能覆盖先前实例 |
+| 重复注册同名配置，即使传同一对象 | `CONFIGURATION` 失败 |
+| 查询未知名称 | `CONFIGURATION` 失败，不进行 Provider 发现 |
+| 非法名称 / null 参数 | `IllegalArgumentException` / `NullPointerException` |
+| 并发默认初始化或同名注册 | 只发布一个成功实例，重复注册方失败 |
+| 一个名称注册成功后另一名称注册失败 | 不回滚已注册位置；多次注册不是批量事务 |
+
+原生配置也可以针对每个名称分别设置。注册完成后 mapper 的行为稳定，不能通过全局入口修改；不同调用方不会在同一个名称下悄悄拿到不同版本的实例。
+
+### 3.4 生命周期与适用边界
+
+全局引用与加载 Json 类的 ClassLoader 同寿命，并强引用实现及其适配器；不提供 reset、替换、注销或自动 close。scope 应是应用启动时已知的有限配置名称，不能直接使用请求、设备或动态租户 ID。它不自动读取 ThreadLocal 或 Reactor Context。
+
+容器中可将全局配置查询结果注入业务，热点链路持有实例即可。需要可卸载插件、多应用隔离或局部测试状态时，优先由宿主持有普通 Builder 创建的实例，不注册到父 ClassLoader 的全局表。reader/writer/session 仍按操作创建，不能注册为共享状态。
 
 <a id="options"></a>
 ## 4. 通用配置与限制
@@ -757,7 +816,7 @@ python3 scripts/run-streaming-benchmarks.py
 | 类别 | 常见原因 |
 | --- | --- |
 | `PROVIDER` | 无匹配引擎、发现歧义或重复 Provider id |
-| `CONFIGURATION` | 重复注册、原生类型不匹配、共享配置冲突 |
+| `CONFIGURATION` | 重复注册、未知配置名、默认初始化重入、原生类型不匹配、共享配置冲突 |
 | `SYNTAX` | 无效 JSON、残缺输入、错误分帧 |
 | `BINDING` | 无法绑定目标类型或业务适配失败 |
 | `LIMIT` | token、深度或当前值预算超限 |
@@ -823,7 +882,7 @@ try {
 
 | API | 用途与关键重载 |
 | --- | --- |
-| [Json](../json-facade-api/src/main/java/org/jetlinks/json/Json.java) | `builder`、`defaultMapper` |
+| [Json](../json-facade-api/src/main/java/org/jetlinks/json/Json.java) | `builder`、`global()`、`global(String)`、`registerGlobal(JsonMapper)`、`registerGlobal(String, JsonMapper)`、`defaultMapper` |
 | [JsonMapperBuilder](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapperBuilder.java) | `provider(String/JsonProvider)`、`classLoader`、`options`、`module`、`configureNative`、`build` |
 | [JsonMapper](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapper.java) | `write(Object)`、`writeBytes`、`write(Object, OutputStream/Writer)`、`writeCompact(Object, OutputStream)`；`read(String/byte[], Class/JsonType)`、`read(InputStream/Reader, JsonType)`；`convert(Object, JsonType)`；`readTree(String)`、`toTree(Object)`；工厂、游标和会话 |
 | [JsonType](../json-facade-api/src/main/java/org/jetlinks/json/JsonType.java) | 匿名泛型捕获、`of(Class/Type)`、`listOf`、`mapOf`、`type` |

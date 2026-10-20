@@ -6,7 +6,7 @@ For installation, configuration and end-to-end usage examples, see the [Chinese 
 
 The facade handles explicit JSON calls in programs: binding, conversion, tree manipulation, cursor operations and manually composed byte streams. HTTP request/response codecs, WebClient, SSE and ORM integrations use their official configuration. The library has no Spring/Netty dependency or auto-configuration. Pooled buffers are converted and released by their existing host owner.
 
-`JsonProvider` is the only engine factory SPI. `JsonModule`/`JsonAdapter` express neutral binding extensions. `JsonMapperBuilder.configureNative(Class<C>, Consumer<? super C>)` configures the selected Provider's native builder through a typed build-time callback. The immutable configuration is fully applied before publishing a mapper. Ordinary callers never receive the native mapper, and no operation mutates a global registry.
+`JsonProvider` is the only engine factory SPI. `JsonModule`/`JsonAdapter` express neutral binding extensions. `JsonMapperBuilder.configureNative(Class<C>, Consumer<? super C>)` configures the selected Provider's native builder through a typed build-time callback. The immutable configuration is fully applied before publishing a mapper. Ordinary callers never receive the native mapper, and binding operations never mutate shared configuration.
 
 Explicit Provider selection wins. Discovery is scoped to the builder's ClassLoader, with no permanent ClassLoader cache. An ambiguous classpath, duplicate Provider/module identity, duplicate exact-class adapter or mismatched native configuration type fails before use. Unsupported configuration is never ignored.
 
@@ -14,7 +14,17 @@ Native configuration uses one common entry point rather than Provider-specific e
 
 Configuration assembly is owned by the API and each Provider. Contract tests cover typed native access, callback order and per-build isolation, mismatch/failure behavior, native modules/mixins, and rejection of conflicting policies in both real engines.
 
-Options define lossless untyped decimal binding, unknown properties, duplicate keys, omission of nulls, pretty synchronous output, parser depth/string/number constraints and a materialized-record byte budget. Streaming output is always compact, including when synchronous output is pretty. Named scenario instances are a host concern.
+Options define lossless untyped decimal binding, unknown properties, duplicate keys, omission of nulls, pretty synchronous output, parser depth/string/number constraints and a materialized-record byte budget. Streaming output is always compact, including when synchronous output is pretty. Assembly of each named configuration remains a host concern.
+
+## Shared mapper instances
+
+`Json.global()` returns the shared default JsonMapper directly; `defaultMapper()` delegates to the same instance. A host may configure an ordinary builder and call `registerGlobal(mapper)` before first use. Otherwise the default is lazily built with the existing unambiguous Provider discovery rules. Creation and registration are coordinated so exactly one instance is published; successful reads remain stable, and failed construction publishes nothing, preserves its exception and allows later explicit registration. Recursive default initialization or registration during its own construction fails with CONFIGURATION.
+
+`registerGlobal(scope, mapper)` publishes an already configured JsonMapper implementation under a case-sensitive name, and `global(scope)` only looks it up. Names must be non-null, nonblank and have no leading/trailing whitespace. Unknown names fail with CONFIGURATION rather than falling back or constructing a mapper. Duplicate registration, including the same instance, fails with CONFIGURATION; initialized defaults cannot be replaced. Invalid names throw IllegalArgumentException and null arguments throw NullPointerException. Each registration is independent, not an atomic multi-name transaction.
+
+Scope names represent a finite set of application-lifetime configurations, not request/tenant IDs or implicit Reactor/ThreadLocal context. Global references live with the ClassLoader loading Json and strongly retain the registered implementation and its adapters. There is no replacement, reset, unregister, background task or automatic close protocol; short-lived plugins and isolated applications should own and inject ordinary builder-created instances. Custom implementations must obey JsonMapper's thread-safety and operation/resource contracts. This configuration registry owns no live sessions and adds no MBean or per-operation tracing; the host owns application-level configuration observation.
+
+Implementation scope is limited to the API's shared-instance management, its concurrency/lifecycle tests, real-Provider assembly tests and usage documentation. Provider parsing, Reactor composition and resource-release algorithms remain unchanged; existing large-document evidence applies to those paths.
 
 ## Types, tree and cursors
 
@@ -88,7 +98,7 @@ The stress harness lazily generates source bytes, requests one record/chunk at a
 
 `ResourceReleaseStress` retains 64 closed owners per fork while their former buffers exceed a 64 MiB heap or 32 MiB direct-memory limit. Both engines cover heap/direct input sessions, standalone readers/writers, malformed input, failing output flush and discarded segmented queues. The fixture uses allocation pressure and reachability fences, without explicit GC or private-field inspection. It verifies bounded retention even when callers keep a closed facade reachable.
 
-Java 17 and 21 each pass the full 103-test quality gate, including native configuration regressions. The configuration update also passes both engines' six 16 MiB streaming modes under a 128 MiB maximum heap and all 16 closed-resource forks. Prior validation of the unchanged streaming and resource paths covers at least 1 GiB per document in all six modes with 128/256 MiB maximum heaps, plus 64 B/64 KiB input chunks. Historical JFR recordings of 1 GiB array output and structured document copying under a 128 MiB maximum heap show approximately 3.8–6.6 MiB live after GC. The linked PR records source versions, measured allocation comparisons and delivery evidence.
+Java 17 and 21 each pass the full 112-test quality gate, including native configuration and global-instance regressions. Shared-instance tests cover concurrent publication, initialization failure/reentry, custom defaults, named isolation, ambiguous Provider discovery and actual-engine/reactive use. Global usage examples also compile and run in independent JVMs on both Java versions. The prior native-configuration update passes both engines' six 16 MiB streaming modes under a 128 MiB maximum heap and all 16 closed-resource forks. Prior validation of the unchanged streaming and resource paths covers at least 1 GiB per document in all six modes with 128/256 MiB maximum heaps, plus 64 B/64 KiB input chunks. Historical JFR recordings of 1 GiB array output and structured document copying under a 128 MiB maximum heap show approximately 3.8–6.6 MiB live after GC. The linked PR records source versions, measured allocation comparisons and delivery evidence.
 
 Review and CI entry: [jetlinks/json-facade#1](https://github.com/jetlinks/json-facade/pull/1).
 
