@@ -5,10 +5,11 @@ import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.jetlinks.json.spi.JsonConfiguration;
 import org.jetlinks.json.spi.JsonModule;
 import org.jetlinks.json.spi.JsonModuleContext;
-import org.jetlinks.json.spi.JsonNativeExtension;
+import org.jetlinks.json.spi.JsonNativeConfiguration;
 import org.jetlinks.json.spi.JsonProvider;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -117,7 +118,7 @@ class JsonApiTest {
     }
 
     @Test
-    void configurationCopiesListsAndBuildRejectsMismatchAndDuplicateModules() {
+    void configurationCopiesListsAndBuildRejectsDuplicateModules() {
         List<JsonModule> modules = new ArrayList<>();
         JsonConfiguration configuration = new JsonConfiguration(JsonOptions.DEFAULT, modules, List.of());
         modules.add(module("one"));
@@ -138,9 +139,6 @@ class JsonApiTest {
         assertThrows(Selected.class, () -> Json.builder().provider(provider).build());
         assertThrows(JsonException.class, () -> Json.builder().provider(provider)
                 .module(module("same")).module(module("same")).build());
-        JsonNativeExtension extension = () -> "other";
-        assertThrows(JsonException.class, () -> Json.builder().provider(provider).extension(extension).build());
-        assertThrows(Selected.class, () -> Json.builder().provider(provider).extension(() -> "fixture").build());
         assertThrows(JsonException.class, () -> Json.builder().provider("absent")
                 .classLoader(getClass().getClassLoader()).build());
         assertThrows(JsonException.class, () -> Json.builder().build());
@@ -148,6 +146,54 @@ class JsonApiTest {
         JsonException cause = new JsonException(JsonException.Kind.IO, "code", new java.io.IOException());
         assertEquals(JsonException.Kind.IO, cause.kind());
         assertInstanceOf(java.io.IOException.class, cause.getCause());
+    }
+
+    @Test
+    void nativeConfigurationCopiesCallbacksAndAcceptsAssignableTypesInOrder() {
+        List<JsonNativeConfiguration<?>> callbacks = new ArrayList<>();
+        callbacks.add(new JsonNativeConfiguration<>(StringBuilder.class, builder -> builder.append("a")));
+        callbacks.add(new JsonNativeConfiguration<>(Appendable.class, builder -> {
+            assertEquals("a", builder.toString());
+        }));
+        callbacks.add(new JsonNativeConfiguration<>(StringBuilder.class, builder -> builder.append("b")));
+        JsonConfiguration configuration = new JsonConfiguration(JsonOptions.DEFAULT, List.of(), callbacks);
+        callbacks.clear();
+        assertEquals(3, configuration.nativeConfigurations().size());
+        assertThrows(UnsupportedOperationException.class, configuration.nativeConfigurations()::clear);
+        StringBuilder nativeBuilder = new StringBuilder();
+        configuration.configureNative(nativeBuilder);
+        assertEquals("ab", nativeBuilder.toString());
+        assertThrows(NullPointerException.class, () -> configuration.configureNative(null));
+        assertThrows(NullPointerException.class, () -> Json.builder().configureNative(null, ignored -> { }));
+        assertThrows(NullPointerException.class, () -> Json.builder().configureNative(StringBuilder.class, null));
+    }
+
+    @Test
+    void nativeConfigurationValidatesTheWholeBatchBeforeInvokingCallbacks() {
+        AtomicInteger invoked = new AtomicInteger();
+        JsonConfiguration configuration = new JsonConfiguration(JsonOptions.DEFAULT, List.of(), List.of(
+                new JsonNativeConfiguration<>(StringBuilder.class, builder -> invoked.incrementAndGet()),
+                new JsonNativeConfiguration<>(StringBuffer.class, builder -> invoked.incrementAndGet())));
+        JsonException error = assertThrows(JsonException.class,
+                () -> configuration.configureNative(new StringBuilder()));
+        assertEquals(JsonException.Kind.CONFIGURATION, error.kind());
+        assertTrue(error.getMessage().contains(StringBuffer.class.getName()));
+        assertTrue(error.getMessage().contains(StringBuilder.class.getName()));
+        assertEquals(0, invoked.get());
+    }
+
+    @Test
+    void nativeCallbackFailuresKeepTheirCauseAndStopLaterCallbacks() {
+        AtomicInteger invoked = new AtomicInteger();
+        IllegalStateException failure = new IllegalStateException("fixture");
+        JsonConfiguration configuration = new JsonConfiguration(JsonOptions.DEFAULT, List.of(), List.of(
+                new JsonNativeConfiguration<>(StringBuilder.class, builder -> { throw failure; }),
+                new JsonNativeConfiguration<>(StringBuilder.class, builder -> invoked.incrementAndGet())));
+        JsonException error = assertThrows(JsonException.class,
+                () -> configuration.configureNative(new StringBuilder()));
+        assertEquals(JsonException.Kind.CONFIGURATION, error.kind());
+        assertSame(failure, error.getCause());
+        assertEquals(0, invoked.get());
     }
 
     private static JsonModule module(String id) {

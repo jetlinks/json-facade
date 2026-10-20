@@ -27,7 +27,6 @@ import org.jetlinks.json.internal.JsonValues;
 import org.jetlinks.json.spi.JsonAdapter;
 import org.jetlinks.json.spi.JsonConfiguration;
 import org.jetlinks.json.spi.JsonModuleContext;
-import org.jetlinks.json.spi.JsonNativeExtension;
 import org.jetlinks.json.spi.JsonProvider;
 
 /** ServiceLoader provider for Jackson 2. All configuration precedes mapper publication.
@@ -71,13 +70,43 @@ public final class Jackson2Provider implements JsonProvider {
         JsonModuleContext context = new AdapterContext(module);
         configuration.modules().forEach(extension -> extension.configure(context));
         builder.addModule(module);
-        for (JsonNativeExtension extension : configuration.extensions()) {
-            if (!(extension instanceof Jackson2Extension nativeExtension)) {
-                throw new JsonException(JsonException.Kind.CONFIGURATION, "Unsupported Jackson 2 extension");
-            }
-            nativeExtension.configure().accept(builder);
+        configuration.configureNative(builder);
+        var mapper = builder.build();
+        validateNativeConfiguration(mapper, options);
+        return new Jackson2Mapper(mapper, options);
+    }
+
+    private static void validateNativeConfiguration(com.fasterxml.jackson.databind.json.JsonMapper mapper,
+                                                    JsonOptions options) {
+        // Native modules remain extensible, while shared policies must describe the published mapper.
+        require(mapper.isEnabled(DeserializationFeature.FAIL_ON_TRAILING_TOKENS), "single-root reads");
+        require(!mapper.isEnabled(StreamReadFeature.AUTO_CLOSE_SOURCE), "caller-owned input");
+        require(!mapper.isEnabled(StreamWriteFeature.AUTO_CLOSE_TARGET), "caller-owned output");
+        require(!mapper.isEnabled(StreamWriteFeature.AUTO_CLOSE_CONTENT), "incomplete-document handling");
+        require(mapper.isEnabled(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                == options.failUnknownProperties(), "JsonOptions.failUnknownProperties");
+        require(mapper.isEnabled(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                == options.losslessNumbers(), "JsonOptions.losslessNumbers");
+        require(mapper.isEnabled(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
+                == options.failDuplicateKeys(), "JsonOptions.failDuplicateKeys");
+        require(mapper.isEnabled(SerializationFeature.INDENT_OUTPUT) == options.pretty(), "JsonOptions.pretty");
+        var inclusion = mapper.getSerializationConfig().getDefaultPropertyInclusion();
+        var expected = options.omitNulls() ? JsonInclude.Include.NON_NULL : JsonInclude.Include.ALWAYS;
+        require(inclusion.getValueInclusion() == expected && inclusion.getContentInclusion() == expected,
+                "JsonOptions.omitNulls (global inclusion)");
+        var readLimits = mapper.tokenStreamFactory().streamReadConstraints();
+        require(readLimits.getMaxNestingDepth() == options.maxDepth(), "JsonOptions.maxDepth (read)");
+        require(mapper.tokenStreamFactory().streamWriteConstraints().getMaxNestingDepth() == options.maxDepth(),
+                "JsonOptions.maxDepth (write)");
+        require(readLimits.getMaxStringLength() == options.maxStringLength(), "JsonOptions.maxStringLength");
+        require(readLimits.getMaxNumberLength() == options.maxNumberLength(), "JsonOptions.maxNumberLength");
+    }
+
+    private static void require(boolean compatible, String policy) {
+        if (!compatible) {
+            throw new JsonException(JsonException.Kind.CONFIGURATION,
+                    "Native JSON configuration conflicts with " + policy);
         }
-        return new Jackson2Mapper(builder.build(), options);
     }
 
     private static void installTree(SimpleModule module) {

@@ -17,11 +17,14 @@ public interface JsonProvider {
      * Must honor all declared facade contracts, including independent incremental sessions.
      * Unsupported/mismatched configuration fails now; never silently ignore it or fall back.
      * Called synchronously by the builder; do not retain mutable construction state or perform I/O.
-     * @param configuration non-null immutable options and ordered extensions; do not mutate their members
+     * Use JsonConfiguration.configureNative with a fresh native builder, and validate shared options
+     * and ownership constraints after callbacks. Never retain or expose native construction state.
+     * @param configuration non-null immutable options and ordered callbacks; do not mutate their members
      * @return a non-null, independently configured mapper, safe for concurrent operations
      * @throws org.jetlinks.json.JsonException if construction or configuration is unsupported
      * @since 1.0.0
      * @see JsonMapper#readSession
+     * @see JsonConfiguration#configureNative(Object)
      */
     JsonMapper create(JsonConfiguration configuration);
 }

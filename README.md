@@ -90,7 +90,17 @@ Event reads preserve structure without collecting containers. Event writes valid
 
 `JsonModule` registers exact-class `JsonAdapter<T>` instances through `JsonModuleContext`. Adapters read/write borrowed neutral cursors using the same binding context. Registrations are build-time only and must be thread-safe; duplicate module IDs or duplicate class adapters fail. Null values follow mapper policies rather than invoking adapters.
 
-`Jackson2Extension` and `Jackson3Extension` provide typed native builder callbacks for engine-specific modules/mixins. They belong in application assembly code, not ordinary JSON callers. The callback must not retain the builder or mutate a published mapper. Native annotations and native extensions are explicit remaining migration boundaries.
+`configureNative` provides typed access to the selected Provider's native builder, for engine-specific modules, mixins and naming policies:
+
+```java
+JsonMapper mapper = Json.builder().provider("jackson2")
+    .configureNative(com.fasterxml.jackson.databind.json.JsonMapper.Builder.class,
+        nativeBuilder -> nativeBuilder.propertyNamingStrategy(
+            com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE))
+    .build();
+```
+
+For Jackson 3, use `tools.jackson.databind.json.JsonMapper.Builder.class`. Each build has a fresh native builder; callbacks run in order after all types have been checked. A mismatched type or a conflict with shared `JsonOptions` policies fails at build time. Native callbacks belong in application assembly code and must not retain the builder or mutate a published mapper. Native annotations and native configuration remain explicit migration boundaries.
 
 Opt-in [large-document stress and allocation benchmarks](docs/contracts.md#implementation-and-validation) exercise both engines under bounded heaps.
 

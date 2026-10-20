@@ -6,9 +6,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.function.Consumer;
 import org.jetlinks.json.spi.JsonConfiguration;
 import org.jetlinks.json.spi.JsonModule;
-import org.jetlinks.json.spi.JsonNativeExtension;
+import org.jetlinks.json.spi.JsonNativeConfiguration;
 import org.jetlinks.json.spi.JsonProvider;
 
 /** Operation-local builder. No mapper is globally changed; multiple engines require explicit choice.
@@ -17,7 +18,7 @@ import org.jetlinks.json.spi.JsonProvider;
 public final class JsonMapperBuilder {
     private JsonOptions options = JsonOptions.DEFAULT;
     private final List<JsonModule> modules = new ArrayList<>();
-    private final List<JsonNativeExtension> extensions = new ArrayList<>();
+    private final List<JsonNativeConfiguration<?>> nativeConfigurations = new ArrayList<>();
     private JsonProvider provider;
     private String providerId;
     private ClassLoader classLoader = Json.class.getClassLoader();
@@ -32,8 +33,18 @@ public final class JsonMapperBuilder {
         return this;
     }
 
-    public JsonMapperBuilder extension(JsonNativeExtension value) {
-        extensions.add(Objects.requireNonNull(value, "extension"));
+    /** Configure the selected engine's native builder during each build, in registration order.
+     * All native types are checked before any callback runs. Shared policies remain governed by
+     * JsonOptions; conflicting native settings fail at build time. Never retain the borrowed builder.
+     * @param type native builder type supplied by the chosen Provider
+     * @param configure synchronous build-time callback; reusable callbacks must be thread-safe
+     * @param <C> native builder type
+     * @return this operation-local builder
+     * @since 1.0.0
+     * @see JsonConfiguration#configureNative(Object)
+     */
+    public <C> JsonMapperBuilder configureNative(Class<C> type, Consumer<? super C> configure) {
+        nativeConfigurations.add(new JsonNativeConfiguration<>(type, configure));
         return this;
     }
 
@@ -62,12 +73,7 @@ public final class JsonMapperBuilder {
                 throw new JsonException(JsonException.Kind.CONFIGURATION, "Duplicate JSON module: " + module.id());
             }
         }
-        for (JsonNativeExtension extension : extensions) {
-            if (!selected.id().equals(extension.providerId())) {
-                throw new JsonException(JsonException.Kind.CONFIGURATION, "JSON extension provider mismatch");
-            }
-        }
-        return selected.create(new JsonConfiguration(options, modules, extensions));
+        return selected.create(new JsonConfiguration(options, modules, nativeConfigurations));
     }
 
     private JsonProvider discover() {
