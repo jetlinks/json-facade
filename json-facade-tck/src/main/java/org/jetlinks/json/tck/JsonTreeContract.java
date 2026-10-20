@@ -44,6 +44,27 @@ public abstract class JsonTreeContract {
     protected abstract JsonMapper mapper(JsonOptions options, JsonModule... modules);
 
     @Test
+    void structuralFactoriesRejectMutableNumbersWhileBindingNormalizesThem() {
+        JsonMapper json = mapper(JsonOptions.DEFAULT);
+        AtomicInteger source = new AtomicInteger(7);
+        assertThrows(IllegalArgumentException.class, () -> json.createObject(Map.of("n", source)));
+        assertThrows(IllegalArgumentException.class, () -> json.createArray(List.of(source)));
+        JsonValue bound = json.toTree(Map.of("n", source));
+        JsonValue copy = bound.deepCopy();
+        Map<?, ?> exported = (Map<?, ?>) bound.toJavaValue();
+        assertEquals(Integer.class, exported.get("n").getClass());
+        source.set(9);
+        assertEquals(7, bound.get("n").asInt());
+        assertEquals(7, copy.get("n").asInt());
+        assertEquals(7, exported.get("n"));
+        JsonArray array = json.createArray(List.of(BigInteger.TEN, new BigDecimal("1.2300")));
+        JsonObject tree = json.createObject(Map.of("numbers", array));
+        array.set(0, 11);
+        assertEquals(BigInteger.TEN, tree.getArray("numbers").get(0).asBigInteger());
+        assertEquals(new BigDecimal("1.2300"), tree.getArray("numbers").get(1).asBigDecimal());
+    }
+
+    @Test
     void scalarAccessUsesProviderAndDefaultsOnlyForAbsentInput() {
         JsonMapper json = mapper(JsonOptions.DEFAULT);
         JsonObject tree = json.createObject(Map.of("n", "12", "flag", "true", "bad", "invalid"));

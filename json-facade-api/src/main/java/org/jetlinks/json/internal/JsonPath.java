@@ -7,7 +7,7 @@ import java.util.Objects;
 import org.jetlinks.json.JsonPointer;
 
 /** Immutable access segments, independent of tree storage. Render only for diagnostics/public access. */
-public final class JsonPath {
+public class JsonPath {
     public static final JsonPath ROOT = new JsonPath(null, null, 0);
     private final JsonPath parent;
     private final String segment;
@@ -17,6 +17,12 @@ public final class JsonPath {
         this.parent = parent;
         this.segment = segment;
         this.position = position;
+    }
+
+    /** Snapshot a foreign location without retaining its node or guessing numeric segment types. */
+    public static JsonPath location(JsonPointer pointer, String displayPath) {
+        return new LocatedRoot(Objects.requireNonNull(pointer, "pointer"),
+                Objects.requireNonNull(displayPath, "displayPath"));
     }
 
     public JsonPath field(String name) {
@@ -29,24 +35,44 @@ public final class JsonPath {
 
     public JsonPointer pointer() {
         List<String> segments = new ArrayList<>();
-        for (JsonPath path = this; path.parent != null; path = path.parent) {
+        JsonPath path = this;
+        for (; path.parent != null; path = path.parent) {
             segments.add(path.segment == null ? Integer.toString(path.position) : path.segment);
         }
         Collections.reverse(segments);
+        if (path instanceof LocatedRoot root) {
+            segments.addAll(0, root.pointer.segments());
+        }
         return new JsonPointer(segments);
     }
 
     public String display() {
         List<JsonPath> segments = new ArrayList<>();
-        for (JsonPath path = this; path.parent != null; path = path.parent) {
-            segments.add(path);
+        JsonPath base = this;
+        for (; base.parent != null; base = base.parent) {
+            segments.add(base);
         }
         Collections.reverse(segments);
         StringBuilder result = new StringBuilder();
+        if (base instanceof LocatedRoot root && !root.display.equals("$")) {
+            result.append(root.display);
+        }
         for (JsonPath path : segments) {
             path.appendTo(result);
         }
         return result.isEmpty() ? "$" : result.toString();
+    }
+
+    /** Foreign prefixes store only immutable diagnostics; ordinary access segments stay compact. */
+    private static final class LocatedRoot extends JsonPath {
+        private final JsonPointer pointer;
+        private final String display;
+
+        LocatedRoot(JsonPointer pointer, String display) {
+            super(null, null, 0);
+            this.pointer = pointer;
+            this.display = display;
+        }
     }
 
     private void appendTo(StringBuilder result) {

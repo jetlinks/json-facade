@@ -1,12 +1,15 @@
 package org.jetlinks.json.internal;
 
 import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import org.jetlinks.json.JsonArray;
 import org.jetlinks.json.JsonException;
@@ -19,6 +22,9 @@ import org.jetlinks.json.JsonValue;
 
 /** Shared JDK tree. Binding borrows backing values synchronously; views retain no ancestor data. */
 public final class JsonValues {
+    // Exact classes: Number and even BigDecimal/BigInteger subclasses may contain mutable state.
+    private static final Set<Class<?>> IMMUTABLE_NUMBERS = Set.of(Byte.class, Short.class, Integer.class,
+            Long.class, Float.class, Double.class, BigInteger.class, BigDecimal.class);
     public static final JsonType<Integer> INT = JsonType.of(int.class);
     public static final JsonType<Integer> INTEGER = JsonType.of(Integer.class);
     public static final JsonType<Long> LONG = JsonType.of(long.class);
@@ -170,7 +176,7 @@ public final class JsonValues {
 
     private static Object copy(Object value) {
         if (value instanceof JsonValue node) {
-            return node.toJavaValue();
+            return copy(bindingValue(node));
         }
         if (value instanceof Map<?, ?> map) {
             Map<String, Object> result = new LinkedHashMap<>();
@@ -197,7 +203,13 @@ public final class JsonValues {
             }
             return result;
         }
-        if (value == null || value instanceof String || value instanceof Number || value instanceof Boolean) {
+        if (value instanceof Number) {
+            if (!IMMUTABLE_NUMBERS.contains(value.getClass())) {
+                throw new IllegalArgumentException("Use JsonMapper.toTree for custom or mutable Numbers");
+            }
+            return value;
+        }
+        if (value == null || value instanceof String || value instanceof Boolean) {
             return value;
         }
         throw new IllegalArgumentException("Use JsonMapper.toTree for Java objects");
@@ -218,7 +230,8 @@ public final class JsonValues {
 
         Scalar(JsonValue absent) {
             this(null, absent.isMissing(), absent instanceof Scalar scalar ? scalar.mapper : null,
-                    absent instanceof Scalar scalar ? scalar.path : JsonPath.ROOT);
+                    absent instanceof Scalar scalar ? scalar.path
+                            : JsonPath.location(absent.pointer(), absent.displayPath()));
         }
 
         void checkPresent() {

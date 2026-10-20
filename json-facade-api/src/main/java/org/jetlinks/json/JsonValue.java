@@ -10,7 +10,10 @@ public interface JsonValue {
     JsonValue NULL = JsonValues.nullValue();
     JsonValue MISSING = JsonValues.missingValue();
 
-    /** Copy JSON-compatible Java containers, or retain an existing node's identity. */
+    /** Copy JSON-compatible Java containers, or retain an existing node's identity.
+     * Structural numbers must be exact JDK boxed numeric, BigInteger or BigDecimal classes;
+     * use JsonMapper.toTree for mutable/custom Numbers and other Java objects.
+     */
     static JsonValue of(Object value) {
         return JsonValues.of(value);
     }
@@ -46,7 +49,9 @@ public interface JsonValue {
         return as(JsonType.of(type));
     }
 
-    /** Absolute access location within this view's root; detached deep copies start at the root. */
+    /** Absolute access location within this view's root; detached deep copies start at the root.
+     * Custom storage implementations override both location methods to preserve absent-view diagnostics.
+     */
     default JsonPointer pointer() {
         return JsonPointer.of("");
     }

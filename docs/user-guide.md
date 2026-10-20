@@ -368,6 +368,12 @@ String treeBinary = mapper.write(mapper.createObject(Map.of("data", new byte[] {
 
 `createObject/createArray/JsonValue.of` 接受 JSON 兼容标量、Map、Collection 和 Java 数组，不对任意 POJO、Instant 等执行绑定；需要应用命名、日期、适配器或非 String Map 键策略时使用 `mapper.toTree(value)`。`JsonValue.of(existingNode)` 保留节点身份，若要隔离请用 `deepCopy()`。
 
+结构工厂及 `put/add/set` 的数字只接受 JDK 精确类型 `Byte/Short/Integer/Long/Float/Double/BigInteger/BigDecimal`。
+`AtomicInteger/AtomicLong`、自定义 `Number` 和大数类型的子类会抛出 `IllegalArgumentException`，
+避免可变数字穿透树、导出和复制的隔离。需要绑定这些 Java 对象时使用 `mapper.toTree(value)`；
+例如 `mapper.toTree(Map.of("n", new AtomicInteger(7)))` 会由 Provider 产生独立数字值。
+自定义原生反序列化器可能返回共享容器，因此树绑定结果仍需防御复制，不能仅凭“刚解析完成”就接管其存储。
+
 树当前没有字段迭代器，也没有数组 `remove/insert/clear`；遍历未知对象字段可导出 Map 快照，但会复制。需要高吞吐遍历大文档时用游标或事件，避免反复导出。当前默认树节点的 `equals` 不做结构比较；需要比较 JSON 数据时可比较导出的 Java 值，并另外明确数字类型/scale 的比较规则。
 
 ### 6.3 类型转换与安全链式读取

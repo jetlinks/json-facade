@@ -242,6 +242,9 @@ binding must attach the configured mapper. Nested views and deep copies retain i
 start a new root location and insertion takes the destination location/configuration.
 Paths belong to access views, including absent object/array views, rather than backing data.
 They retain only immutable segments, never ancestor nodes; render strings/pointers on demand.
+Absent views of third-party storage snapshot its public `pointer()` and `displayPath()`;
+numeric object keys retain the display spelling chosen by that storage. They never retain
+the source node. Custom storage overrides both location methods for non-root locations.
 This adds no whole-tree copy per access, scheduler, tracing, MBean or long-lived cache.
 
 `requirePresent`, `requireNonNull` and predicate-based `require` return the current node
@@ -258,23 +261,35 @@ native coercion/overflow/adapters, nested DTO/generic/cursor/session trees, mapp
 copy/insertion locations and retained failure/view memory boundaries. Existing transport
 algorithms remain shared. The standalone TCK `JsonTreeAccessStress` retains child/absent
 views and validation errors while allocating 512 MiB of former ancestor storage under a
-64 MiB heap, with no explicit GC. Path segments store numeric indices directly and render
-their strings only on diagnostic access. Run it with `python3 scripts/run-tree-access-stress.py`;
+64 MiB heap, with no explicit GC. It also retains 512 foreign absent views whose source
+nodes own that ancestor storage, for 1536 retained views in total. Path segments store numeric
+indices directly and render their strings only on diagnostic access.
+Run it with `python3 scripts/run-tree-access-stress.py`;
 the Java 17/21 CI matrix includes this retained-view regression.
 
-The typed-tree change passes the full Java 17.0.18 / 21.0.10 quality gates with
-187 tests on each JDK, zero failures/errors/skips, and no Checkstyle/SpotBugs
-issues. Each JDK also passes both 64 MiB retained-tree forks, all 24 closed-resource
-forks (64 MiB heap / 32 MiB direct memory), and 18 streaming forks with at least
-1 GiB per document under a 128 MiB heap: both Providers and adapted Jackson 2,
-each across array/NDJSON/wrapped reads, array/NDJSON writes and document copying.
-Transport algorithms are unchanged; earlier Netty/DataBuffer GiB evidence remains
-applicable. These regressions establish bounded retention, not a throughput gain
-or an allocation-free tree API.
+The tree-isolation correction passes the full Java 17.0.18 / 21.0.10 quality gates
+with 194 tests on each JDK, zero failures/errors/skips, no Checkstyle/SpotBugs issues,
+and every production module above the 80% aggregate branch-coverage threshold.
+Both 64 MiB retained-tree forks pass on each JDK, including foreign storage.
+The existing `749cce6` evidence remains applicable to unchanged transport algorithms:
+each JDK passed 24 closed-resource forks (64 MiB heap / 32 MiB direct memory) and
+18 streaming forks with at least 1 GiB per document under a 128 MiB heap, covering
+both Providers and adapted Jackson 2 across array/NDJSON/wrapped reads,
+array/NDJSON writes and document copying. Earlier Netty/DataBuffer GiB evidence
+also remains applicable. These regressions establish bounded retention, not a
+throughput gain or an allocation-free tree API. Delivery remains [draft PR #1](https://github.com/jetlinks/json-facade/pull/1).
 
 `JsonType<T>` stores JDK Type and captures nested generics without Jackson or Spring types. Conversion is JSON binding, not bean copying; object identity is not preserved. `read` requires one full root value and rejects trailing nonwhitespace content. Empty input differs from JSON null.
 
 `JsonValue` is the common tree interface; `JsonObject` and `JsonArray` expose typed mutable containers. Provider-created mappers own `createObject()` / `createArray()` and Map/Collection initialization. The default implementation uses JDK containers. Initializers and put/add/set copy nested JSON containers; explicit nulls are retained and all object keys must be Strings. Inputs must be acyclic JSON-compatible values; use configured `toTree` for arbitrary POJOs. `JsonValue.of` copies Java containers but retains an existing node's identity. Its static object/array methods are configuration-free structural shortcuts.
+
+Structural numbers must have exactly one of the immutable JDK classes Byte, Short,
+Integer, Long, Float, Double, BigInteger or BigDecimal. Other Number implementations,
+including subclasses of BigInteger/BigDecimal, are rejected before mutation with
+IllegalArgumentException; configured `toTree` applies Provider binding to them instead.
+This rule also applies recursively to third-party node exports on insertion. Binding
+results are copied: custom native deserializers can return shared containers, so parsing
+alone does not authorize taking ownership. No allocation/throughput gain is claimed.
 
 `NULL` and `MISSING` are distinct non-null root sentinel nodes. Access views retain locations;
 test `isNull/isMissing` rather than singleton identity. RFC 6901 pointers support escaped

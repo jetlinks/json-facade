@@ -105,6 +105,7 @@ public interface JsonMapper {
     }
 
     default JsonValue readTree(String input) {
+        // Native extensions may return shared containers; a binding result is not proof of exclusive ownership.
         return org.jetlinks.json.internal.JsonValues.of(read(input, Object.class), this);
     }
 

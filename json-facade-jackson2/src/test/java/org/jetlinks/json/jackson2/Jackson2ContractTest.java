@@ -2,7 +2,9 @@ package org.jetlinks.json.jackson2;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -18,10 +20,13 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import org.jetlinks.json.Json;
+import org.jetlinks.json.JsonArray;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonMapperBuilder;
 import org.jetlinks.json.JsonOptions;
+import org.jetlinks.json.JsonObject;
+import org.jetlinks.json.JsonValue;
 import org.jetlinks.json.spi.JsonModule;
 import org.jetlinks.json.tck.JsonMapperContract;
 import org.junit.jupiter.api.Test;
@@ -107,6 +112,35 @@ class Jackson2ContractTest extends JsonMapperContract {
         assertEquals("/n", error.pointer().toString());
         assertEquals(99, strict.createObject().get("missing").asInteger(99));
         assertEquals(12, strict.createObject(java.util.Map.of("n", 12)).get("n").asInteger());
+    }
+
+    @Test
+    void treeBindingCopiesContainersSharedByNativeDeserializers() {
+        List<Object> items = new ArrayList<>(List.of(1));
+        Map<String, Object> shared = new LinkedHashMap<>(Map.of("items", items));
+        SimpleModule module = new SimpleModule("shared-untyped-values");
+        module.addDeserializer(Object.class, new com.fasterxml.jackson.databind.JsonDeserializer<>() {
+            @Override
+            public Object deserialize(com.fasterxml.jackson.core.JsonParser input,
+                                      com.fasterxml.jackson.databind.DeserializationContext context) throws IOException {
+                input.skipChildren();
+                return shared;
+            }
+        });
+        JsonMapper json = Json.builder().provider(new Jackson2Provider())
+                .configureNative(com.fasterxml.jackson.databind.json.JsonMapper.Builder.class,
+                        builder -> builder.addModule(module)).build();
+        List<JsonValue> trees = List.of(json.readTree("{}"), json.read("{}", JsonValue.class),
+                json.read("{}", JsonObject.class), json.toTree(Map.of("ignored", 1)));
+        items.add(2);
+        shared.put("later", 3);
+        for (JsonValue tree : trees) {
+            assertEquals(List.of(1), tree.get("items").toJavaValue());
+            assertTrue(tree.get("later").isMissing());
+            JsonArray nested = tree.getArray("items");
+            nested.add(4);
+        }
+        assertEquals(List.of(1, 2), items);
     }
 
     @Test
