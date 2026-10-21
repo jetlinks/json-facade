@@ -82,7 +82,7 @@ public class JsonType<T> {
 
         @Override
         public int hashCode() {
-            return raw.hashCode() ^ java.util.Arrays.hashCode(getActualTypeArguments());
+            return raw.hashCode() ^ arguments.hashCode();
         }
     }
 }

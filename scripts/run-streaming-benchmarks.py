@@ -23,7 +23,11 @@ DEPS = {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", default=str(ROOT / "target" / "benchmarks" / "results.json"))
-    parser.add_argument("--netty", action="store_true", help="Compare ordinary and pooled Netty paths")
+    fixtures = parser.add_mutually_exclusive_group()
+    fixtures.add_argument("--netty", action="store_true", help="Compare ordinary and pooled Netty paths")
+    fixtures.add_argument("--tree", action="store_true", help="Compare chained and fused tree access")
+    fixtures.add_argument("--provider-read", action="store_true", help="Compare configured native/facade inputs")
+    fixtures.add_argument("--published-write", action="store_true", help="Compare independently owned output")
     args, extra = parser.parse_known_args()
     for artifact, path in DEPS.items():
         if not (M2 / path).is_file():
@@ -34,7 +38,16 @@ def main():
     generated.mkdir(parents=True, exist_ok=True)
     base_cp = runpy.run_path(str(ROOT / "scripts" / "run-netty-stress.py"))["classpath"]() \
         if args.netty else STRESS["classpath"]()
-    fixture = "NettyStreamBenchmark" if args.netty else "StreamBenchmark"
+    if args.provider_read:
+        fixture, package = "ProviderReadBenchmark", "org.jetlinks.json"
+    elif args.published_write:
+        fixture, package = "PublishedWriteBenchmark", "org.jetlinks.json.reactor"
+    elif args.tree:
+        fixture, package = "TreeAccessBenchmark", "org.jetlinks.json"
+    elif args.netty:
+        fixture, package = "NettyStreamBenchmark", "org.jetlinks.json.netty"
+    else:
+        fixture, package = "StreamBenchmark", "org.jetlinks.json.reactor"
     cp = os.pathsep.join([str(classes), base_cp] + [str(M2 / path) for path in DEPS.values()])
     subprocess.run(["javac", "-cp", cp, "-d", str(classes), "-s", str(generated),
                     str(ROOT / "benchmarks" / f"{fixture}.java")], check=True, cwd=ROOT)
@@ -43,9 +56,9 @@ def main():
         ("-jvmArgs", "-Xms512m -Xmx512m"), ("-prof", "gc"), ("-rf", "json"), ("-rff", args.result),
     ]
     options = [item for flag, value in defaults if flag not in extra for item in (flag, value)]
-    package = "netty" if args.netty else "reactor"
-    benchmark = f"org.jetlinks.json.{package}.{fixture}.run"
-    subprocess.run(["java", "-cp", cp, "org.openjdk.jmh.Main", "^" + re.escape(benchmark) + "$"]
+    multiple = args.tree or args.provider_read or args.published_write
+    benchmark = "^" + re.escape(f"{package}.{fixture}") + (r"\..*$" if multiple else r"\.run$")
+    subprocess.run(["java", "-cp", cp, "org.openjdk.jmh.Main", benchmark]
                    + options + extra, check=True, cwd=ROOT)
 
 

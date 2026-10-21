@@ -13,6 +13,10 @@ public interface JsonReader extends AutoCloseable {
     String text();
     /** Bind the entire current value; next() then advances to its successor. */
     <T> T readValue(JsonType<T> type);
+    /** Class counterpart of readValue(JsonType); consumes the same complete current value. */
+    default <T> T readValue(Class<T> type) {
+        return readValue(JsonType.of(type));
+    }
     /** Skip the current scalar or entire container without materializing it. */
     void skipValue();
     /** Release internal state, leaving caller-owned input open. */

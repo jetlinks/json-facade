@@ -68,9 +68,9 @@ import org.jetlinks.json.reactor.JsonStreamMapper;
 
 JsonStreamMapper streams = JsonStreamMapper.of(mapper);
 // chunks: Publisher<byte[]>; buffers: Publisher<? extends ByteBuffer>
-var items = streams.readBytes(chunks, JsonType.of(Item.class),
+var items = streams.readBytes(chunks, Item.class,
     JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
-var fromBuffers = streams.readBuffers(buffers, JsonType.of(Item.class),
+var fromBuffers = streams.readBuffers(buffers, Item.class,
     JsonReadOptions.of(JsonReadOptions.Mode.NDJSON));
 var output = streams.writeBytes(items,
     JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY));

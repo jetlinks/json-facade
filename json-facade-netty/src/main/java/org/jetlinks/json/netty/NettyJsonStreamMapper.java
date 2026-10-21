@@ -46,12 +46,22 @@ public final class NettyJsonStreamMapper {
         return streams.readChunks(chunks(input, true), type, options);
     }
 
+    /** Class counterpart of read, borrowing input and retaining one reference during onNext. */
+    public <T> Flux<T> read(Publisher<? extends ByteBuf> input, Class<T> type, JsonReadOptions options) {
+        return read(input, JsonType.of(type), options);
+    }
+
     /** Accept one transferred reference per delivered buffer, without retaining another.
      * Use for subscriber-owned buffers or already retained receive() input. Upstream owns buffers
      * it has not delivered and must clean its own queued discards. Do not release transferred refs.
      */
     public <T> Flux<T> readOwned(Publisher<? extends ByteBuf> input, JsonType<T> type, JsonReadOptions options) {
         return streams.readChunks(chunks(input, false), type, options);
+    }
+
+    /** Class counterpart of readOwned, consuming one transferred input reference. */
+    public <T> Flux<T> readOwned(Publisher<? extends ByteBuf> input, Class<T> type, JsonReadOptions options) {
+        return readOwned(input, JsonType.of(type), options);
     }
 
     /** Stream a whole document's immutable events with the borrowed/retained ownership of read(). */

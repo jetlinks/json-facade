@@ -220,11 +220,14 @@ public abstract class JsonTreeContract {
         }
         JsonObject source = first.readTree(input).asObject();
         assertEquals(12, source.getObject("child").get("n").asInteger());
+        assertEquals(12, source.at(JsonPointer.of("/child/n")).asInteger());
+        assertEquals(12, source.at(JsonPointer.of("/child/n")).deepCopy().asInteger());
         JsonObject copied = source.getObject("child").deepCopy();
         assertEquals("/n", copied.get("n").pointer().toString());
         assertEquals(12, copied.get("n").asInteger());
         JsonValue destination = second.createObject().put("inserted", source);
         assertEquals(21, destination.getObject("inserted").get("n").asInteger());
+        assertEquals(22, destination.at(JsonPointer.of("/inserted/child/n")).asInteger());
         assertEquals("/inserted/n", destination.getObject("inserted").get("n").pointer().toString());
         TreeHolder holder = first.read("{\"object\":{\"n\":\"1\"},\"array\":[\"2\"]}", TreeHolder.class);
         assertEquals(11, holder.object().get("n").asInteger());
@@ -276,11 +279,16 @@ public abstract class JsonTreeContract {
         assertEquals("/a~1b~0c/q\"\\\n", escaped.pointer().toString());
         assertEquals("[\"a/b~c\"][\"q\\\"\\\\\\u000a\"]", escaped.displayPath());
         assertEquals(12, json.readTree("{\"a\":[12]}").at(JsonPointer.of("/a/0")).asInt());
-        for (String invalid : Arrays.asList("01", "-1", "+1", "99999999999999999999", "", "١")) {
+        for (String invalid : Arrays.asList("01", "-1", "+1", "2147483647", "2147483648",
+                "9223372036854775807", "9223372036854775808", "99999999999999999999", "", "١")) {
             JsonValue absent = json.readTree("{\"a\":[12]}").at(new JsonPointer(List.of("a", invalid, "last")));
             assertTrue(absent.isMissing());
             assertEquals(List.of("a", invalid, "last"), absent.pointer().segments());
         }
+        JsonValue numericKeys = json.createObject(Map.of("01", 1, "2147483648", 2, "9223372036854775808", 3));
+        assertEquals(1, numericKeys.at(JsonPointer.of("/01")).asInt());
+        assertEquals(2, numericKeys.at(JsonPointer.of("/2147483648")).asInt());
+        assertEquals(3, numericKeys.at(JsonPointer.of("/9223372036854775808")).asInt());
     }
 
     @Test
@@ -290,7 +298,8 @@ public abstract class JsonTreeContract {
                 () -> json.read((java.io.InputStream) null, JsonType.of(Object.class)));
         assertThrows(NullPointerException.class,
                 () -> json.read((java.io.Reader) null, JsonType.of(Object.class)));
-        assertThrows(NullPointerException.class, () -> json.convert(1, null));
+        assertThrows(NullPointerException.class, () -> json.convert(1, (JsonType<Object>) null));
+        assertThrows(NullPointerException.class, () -> json.convert(1, (Class<Object>) null));
         assertThrows(NullPointerException.class, () -> json.reader(null));
         assertThrows(NullPointerException.class, () -> json.writer(null));
         assertThrows(NullPointerException.class, () -> json.compactWriter(null));

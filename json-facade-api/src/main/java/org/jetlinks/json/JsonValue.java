@@ -1,5 +1,6 @@
 package org.jetlinks.json;
 
+import org.jetlinks.json.internal.JsonArrayIndex;
 import org.jetlinks.json.internal.JsonValues;
 
 /** Engine-neutral JSON value. Containers are mutable and operation-local; NULL differs from MISSING.
@@ -227,32 +228,15 @@ public interface JsonValue {
         JsonValue current = this;
         for (String segment : pointer.segments()) {
             if (current instanceof JsonArray) {
-                try {
-                    if (!canonicalIndex(segment)) {
-                        current = current.get(segment);
-                    } else {
-                        current = current.get(Integer.parseInt(segment));
-                    }
-                } catch (NumberFormatException e) {
-                    current = current.get(segment);
-                }
+                long index = JsonArrayIndex.parse(segment);
+                // Tree containers use int positions; invalid/oversized segments keep their original path.
+                current = index >= 0 && index <= Integer.MAX_VALUE
+                        ? current.get((int) index) : current.get(segment);
             } else {
                 current = current.get(segment);
             }
         }
         return current;
-    }
-
-    private static boolean canonicalIndex(String segment) {
-        if (segment.isEmpty() || (segment.length() > 1 && segment.charAt(0) == '0')) {
-            return false;
-        }
-        for (int i = 0; i < segment.length(); i++) {
-            if (segment.charAt(i) < '0' || segment.charAt(i) > '9') {
-                return false;
-            }
-        }
-        return true;
     }
 
     default JsonObject put(String name, Object value) {

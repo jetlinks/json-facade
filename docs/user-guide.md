@@ -1,70 +1,54 @@
 # json-facade 使用手册
 
-适用版本：`1.0.0-SNAPSHOT`，Java 17 及以上。本文基于当前公开 API，介绍依赖、配置、绑定、树、扩展和同步/响应式流处理。精确的行为约束见 [公共契约](contracts.md)，项目入口见 [README](../README.md)。
+适用版本：`1.0.0-SNAPSHOT`，Java 17+。本文保留当前 API 的用法与选择依据；精确行为见 [公共契约](contracts.md)，模块边界见 [README](../README.md)。
 
 ## 目录
 
-- [1. 选择合适的入口](#choose)
-- [2. 安装与快速开始](#start)
-- [3. Provider 与实例管理](#provider)
-  - [Spring 默认配置接入](#spring)
-- [4. 通用配置与限制](#options)
-- [5. 对象绑定、泛型与转换](#binding)
-- [6. JsonObject、JsonArray 与路径访问](#tree)
-- [7. 自定义类型适配器](#adapter)
-- [8. Provider 原生配置](#native)
-- [9. 同步游标与文件处理](#cursor)
-- [10. Reactor 流式读取](#read-stream)
-- [11. Reactor 分块写出](#write-stream)
-  - [Netty ByteBuf 支持](#netty)
-  - [Spring DataBuffer 支持](#databuffer)
-- [12. 复杂结构的事件流](#events)
-- [13. 手动增量解析会话](#session)
-- [14. 资源、线程与内存所有权](#ownership)
-- [15. 大文档与性能实践](#performance)
-- [16. 错误处理与常见问题](#errors)
-- [17. Provider 扩展与迁移](#migration)
-- [18. API 索引与验证入口](#reference)
-
-<a id="choose"></a>
-## 1. 选择合适的入口
-
-门面用于应用主动发起的 JSON 操作。可选的 Spring 模块可以把框架已有的 Jackson 2 配置适配为门面默认实例；HTTP、WebClient、SSE 或 ORM 的 JSON 配置仍由对应框架负责。
-
-| 业务需求 | 推荐入口 | 物化单位 |
-| --- | --- | --- |
-| 配置、缓存值、消息中的普通 JSON | `JsonMapper.read/write` | 一个完整值 |
-| DTO、嵌套泛型、Map 与对象转换 | `JsonType`、`convert` | 一个完整值 |
-| 动态字段、小型文档增删改 | `createObject/createArray/readTree` | 整棵树 |
-| 同步大文件、逐项处理根数组 | `JsonReader` / `JsonWriter` | 当前 token 或绑定值 |
-| 网络/文件字节流中的原生 JSON 数组 | `ARRAY_ELEMENTS` / `Format.ARRAY` | 一个数组元素 |
-| 日志、批量导入导出的逐行记录 | `NDJSON` | 一行记录 |
-| `{meta, data:{items:[...]}, summary}` 中的条目 | JSON Pointer selection | 一个选中元素 |
-| 保留全部层级，复制或生成超大复杂文档 | `readEvents/writeEvents` | 一个 token 或 `value` 事件 |
-| 自有事件循环，不引入 Reactor | `readSession/eventSession` | 一个结果 |
-| Netty 池化输入输出 | `NettyJsonStreamMapper` | 当前输入租约、token/绑定值和输出段 |
-| Spring 请求体、响应体和其他 DataBuffer 流 | `DataBufferJsonStreamMapper` | 当前输入租约、token/绑定值和输出段 |
-
-流式处理能够避免收集整个聚合文档。单个 POJO、字符串或数字仍须在对应操作中完整处理；例如 1 GiB 的记录数组可以逐条处理，一个 1 GiB 的字符串不能靠切输入块变成小 token。
+- [入口选择与安装](#start)
+- [Provider、全局配置与 Spring](#provider)
+- [通用配置](#options)
+- [绑定与泛型](#binding)
+- [树、路径与断言](#tree)
+- [中立适配器与原生配置](#adapter)
+- [同步游标](#cursor)
+- [Reactor 读取与写出](#read-stream)
+- [Netty 与 Spring DataBuffer](#netty)
+- [结构事件](#events)
+- [手动增量会话](#session)
+- [资源所有权](#ownership)
+- [性能实践与复现](#performance)
+- [错误与 Provider 扩展](#errors)
+- [API 索引](#reference)
 
 <a id="start"></a>
-## 2. 安装与快速开始
+## 入口选择与安装
 
-### 2.1 Maven 依赖
+门面用于应用主动发起的 JSON 操作。HTTP codec、WebClient、SSE、ORM 仍使用对应框架的官方集成。
 
-当前快照尚未发布到 Maven Central。先在源码根目录安装，或将构件发布到应用可访问的内部制品库：
+| 需求 | 入口 | 物化单位 |
+| --- | --- | --- |
+| 配置、缓存、消息、DTO | JsonMapper read/write/convert | 一个完整值 |
+| 嵌套泛型 | JsonType | 一个完整值 |
+| 动态小文档 | createObject/createArray/readTree | 整棵树 |
+| 同步文件逐项处理 | JsonReader / JsonWriter | 当前 token 或绑定值 |
+| 根数组、逐行记录 | ARRAY_ELEMENTS / NDJSON | 一个记录 |
+| 包装文档中的数组 | Pointer selection | 一个选中元素 |
+| 超大复杂文档 | readEvents/writeEvents | 一个 token 或 value 事件 |
+| 自有事件循环 | readSession/eventSession | 一个结果 |
+| 已有 ByteBuf / DataBuffer 流 | 对应传输适配器 | 输入租约、当前值与输出段 |
+
+当前快照尚未发布到 Maven Central。先从源码安装到本地或发布到内部制品库：
 
 ```sh
 mvn -B -ntp install
 ```
 
-构建的聚合覆盖率检查还需要 Python 3。应用添加 API 和一个 Provider；响应式操作再添加 Reactor 模块。以下选择 Jackson 2：
+构建还需要 Python 3 执行聚合覆盖率检查。应用添加 API 与一个 Provider：
 
 ```xml
 <properties>
     <json-facade.version>1.0.0-SNAPSHOT</json-facade.version>
 </properties>
-
 <dependencies>
     <dependency>
         <groupId>org.jetlinks</groupId>
@@ -76,20 +60,14 @@ mvn -B -ntp install
         <artifactId>json-facade-jackson2</artifactId>
         <version>${json-facade.version}</version>
     </dependency>
-    <!-- 仅流式应用需要 -->
-    <dependency>
-        <groupId>org.jetlinks</groupId>
-        <artifactId>json-facade-reactor</artifactId>
-        <version>${json-facade.version}</version>
-    </dependency>
 </dependencies>
 ```
 
-改用 Jackson 3 时，将 Provider 构件替换为 `json-facade-jackson3`，代码选择 `jackson3`。当前工程采用 Jackson 2 `2.22.3`、Jackson 3 `3.0.3`、Reactor `3.7.18`。覆盖依赖版本后应重新验证真实引擎兼容性。`json-facade-tck` 是 Provider 测试工具，`json-facade-coverage` 是构建聚合模块，应用不需要引入它们。
+Jackson 3 改用 `json-facade-jackson3`；响应式操作加 `json-facade-reactor`；Netty 加 `json-facade-netty`。Spring 配置桥接加 `json-facade-spring`，其 DataBuffer 入口还需显式加 Reactor 模块。
 
-### 2.2 第一个完整示例
+当前依赖基线为 Jackson 2 `2.22.3`、Jackson 3 `3.0.3`、Reactor `3.7.18`、Netty `4.1.138.Final`。覆盖版本后应验证真实引擎兼容性。TCK 与 coverage 模块不属于应用运行依赖。
 
-保存为 `QuickStart.java`，在已配置上述依赖的 Java 工程运行：
+以下完整示例可保存为 QuickStart.java：
 
 ```java
 import java.util.List;
@@ -104,504 +82,227 @@ public class QuickStart {
         JsonMapper mapper = Json.builder().provider("jackson2").build();
         String json = mapper.write(new Item("device-1", 3));
         Item item = mapper.read(json, Item.class);
-        List<Item> items = mapper.read("[" + json + "]", JsonType.listOf(JsonType.of(Item.class)));
-        System.out.println(item.id() + ": " + items.size()); // device-1: 1
+        List<Item> items = mapper.read("[" + json + "]",
+            JsonType.listOf(JsonType.of(Item.class)));
+        System.out.println(item.id() + ": " + items.size());
     }
 }
 ```
 
-下文片段沿用 `public record Item(String id, int count) { }`、已构建的 `JsonMapper mapper` 和 `JsonStreamMapper streams = JsonStreamMapper.of(mapper)`。除特别注明外，片段放在应用方法内，按需导入：
-
-```java
-import java.io.*;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.util.*;
-import java.util.function.Consumer;
-import org.jetlinks.json.*;
-import org.jetlinks.json.reactor.JsonStreamMapper;
-import org.jetlinks.json.spi.*;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-```
-
-生产代码可以按项目规范改成显式导入。标明为方法或类型声明的片段放在类体中。
+下文片段沿用 Item、已构建的 mapper，以及 `JsonStreamMapper streams = JsonStreamMapper.of(mapper)`。按需导入 `org.jetlinks.json`、`org.jetlinks.json.reactor`、JDK 与 Reactor 类型；声明为方法/类型的片段放在类体中。
 
 <a id="provider"></a>
-## 3. Provider 与实例管理
-
-### 3.1 显式构建与 Provider 选择
+## Provider 与实例管理
 
 ```java
-// 按 ServiceLoader 发现的 id 选择。
 JsonMapper mapper = Json.builder().provider("jackson2").build();
-
-// 直接提供工厂，绕过 ServiceLoader 发现。
 JsonMapper explicit = Json.builder()
-    .provider(new org.jetlinks.json.jackson2.Jackson2Provider())
-    .build();
-
-// 插件环境可限定发现范围。
-JsonMapper isolated = Json.builder()
-    .classLoader(applicationClassLoader)
-    .provider("jackson2")
-    .build();
+    .provider(new org.jetlinks.json.jackson2.Jackson2Provider()).build();
+JsonMapper isolated = Json.builder().classLoader(applicationClassLoader)
+    .provider("jackson3").build();
 ```
 
-`applicationClassLoader` 由宿主提供。Jackson 3 工厂是 `org.jetlinks.json.jackson3.Jackson3Provider`。构建器最后一次 `provider(...)` 设置生效。未显式指定时，发现范围中必须恰好有一个 Provider；多个候选、重复 Provider id 或无匹配候选都会报错，不会在解析失败后换引擎重试。
+直接传 Provider 绕过 ServiceLoader；宿主提供 applicationClassLoader 时可限定发现范围。最后一次 provider 设置生效。未指定时必须恰有一个候选；无匹配、歧义或重复 id 都会失败，解析错误不会触发换引擎重试。
 
-`JsonMapper` 构建完成后可跨线程共享。构建器属于装配过程，不应并发修改；reader、writer、session 和可变树均按操作创建。为不同业务构建不同实例，例如外部严格入站配置和内部兼容读取配置，构建后通过依赖注入共享；不要每条消息重新构建。
+构建后的 mapper 可跨线程共享，按操作创建 reader/writer/session。不同业务规则使用不同 mapper；不要每条消息构建一次。
 
-### 3.2 全局默认实例与自定义配置
+### 默认与命名实例
 
-`Json.global()` 直接返回共享 JsonMapper，`Json.defaultMapper()` 返回同一个默认实例。小程序可以直接使用无参入口，首次访问会惰性发现恰好一个 Provider。类路径中有多个引擎时，先明确构建并注册默认实现。
-
-应用需要自定义配置时，在任何业务首次获取默认实例前完成注册；通用选项、中立模块和原生配置都使用已有 Builder。下面的注册应在应用启动阶段执行一次：
+应用在首次访问默认实例前注册，配置仍由普通 Builder 完成：
 
 ```java
-JsonOptions d = JsonOptions.DEFAULT;
-JsonOptions strict = new JsonOptions(d.losslessNumbers(), true, true,
-    d.omitNulls(), d.pretty(), d.maxDepth(), d.maxStringLength(),
-    d.maxNumberLength(), d.maxValueBytes());
+JsonOptions strict = JsonOptions.DEFAULT
+    .withFailUnknownProperties(true).withFailDuplicateKeys(true);
+Json.registerGlobal(Json.builder().provider("jackson2").options(strict).build());
+Json.registerGlobal("partner-input",
+    Json.builder().provider("jackson3").options(strict).build());
 
-JsonMapper configured = Json.builder().provider("jackson2")
-    .options(strict)
-    .configureNative(com.fasterxml.jackson.databind.json.JsonMapper.Builder.class,
-        nativeBuilder -> nativeBuilder.propertyNamingStrategy(
-            com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE))
-    .build();
-Json.registerGlobal(configured);
-
-String json = Json.global().write(Map.of("status", "ready"));
-boolean sameDefault = Json.global() == Json.defaultMapper(); // true
+String json = Json.global().write(java.util.Map.of("status", "ready"));
+JsonMapper partner = Json.global("partner-input");
 ```
 
-门面不会接管框架中已有的 mapper；也可以将宿主自己实现的、遵守 JsonMapper 线程与资源契约的实例直接传入 `registerGlobal`。注册只发布该实例，不重建、不改配置。
+`Json.global()` 与 `defaultMapper()` 返回同一默认 mapper；未注册时首次访问惰性发现一个 Provider。名称区分大小写、不可为空白或含首尾空白。命名位置独立于无参默认位置；未知名称和重复注册失败，不会回退或替换。
 
-默认构建失败不会发布半成品或使 Json 类永久初始化失败；错误保持原有类别，宿主仍可构建正确实例后显式注册。初始化回调不能递归获取或注册正在构建的默认实例。
+全局引用与 API ClassLoader 同寿命，不提供 reset/unregister/close。只注册启动时已知的有限配置名；不要用请求、设备或动态租户 ID。插件卸载、多应用隔离和可重复测试优先注入宿主持有的普通实例。
 
-容器集成可以调用 `Json.registerGlobalFactory(factory)` 提前保留默认位置，第一次 `global()` 再同步创建实例。注册时不执行工厂；成功后释放工厂引用。工厂失败后允许重试同一个工厂，但已保留的位置不能被替换；这与未显式注册时的默认发现失败不同。工厂不能递归获取默认实例。应用的 Spring 接入应使用下面的适配模块。
-
-### 3.3 按配置名称注册实现
-
-```java
-JsonMapper partnerInput = Json.builder().provider("jackson2")
-    .options(strict).build(); // strict 沿用上一段的通用选项
-Json.registerGlobal("partner-input", partnerInput);
-Json.registerGlobal("legacy-data", Json.builder().provider("jackson3").build());
-
-JsonMapper selected = Json.global("partner-input");
-JsonStreamMapper partnerStreams = JsonStreamMapper.of(selected);
-```
-
-名字区分大小写，不能为 null、空白或包含首尾空白。无参默认位置独立于所有名称，包括名为 `"default"` 的配置。`global(name)` 只查询，不会在缺失时创建、复制或退回默认配置。
-
-| 操作 | 行为 |
-| --- | --- |
-| 注册已经初始化的默认实例 | `CONFIGURATION` 失败，不能覆盖先前实例 |
-| 重复注册同名配置，即使传同一对象 | `CONFIGURATION` 失败 |
-| 查询未知名称 | `CONFIGURATION` 失败，不进行 Provider 发现 |
-| 非法名称 / null 参数 | `IllegalArgumentException` / `NullPointerException` |
-| 并发默认初始化或同名注册 | 只发布一个成功实例，重复注册方失败 |
-| 一个名称注册成功后另一名称注册失败 | 不回滚已注册位置；多次注册不是批量事务 |
-
-原生配置也可以针对每个名称分别设置。注册完成后 mapper 的行为稳定，不能通过全局入口修改；不同调用方不会在同一个名称下悄悄拿到不同版本的实例。
-
-### 3.4 生命周期与适用边界
-
-全局引用与加载 Json 类的 ClassLoader 同寿命，并强引用实现及其适配器；不提供 reset、替换、注销或自动 close。scope 应是应用启动时已知的有限配置名称，不能直接使用请求、设备或动态租户 ID。它不自动读取 ThreadLocal 或 Reactor Context。
-
-容器中可将全局配置查询结果注入业务，热点链路持有实例即可。需要可卸载插件、多应用隔离或局部测试状态时，优先由宿主持有普通 Builder 创建的实例，不注册到父 ClassLoader 的全局表。reader/writer/session 仍按操作创建，不能注册为共享状态。
+容器可用 `registerGlobalFactory(factory)` 提前保留默认位置，首次访问再创建。失败可重试同一工厂，保留位置不能被替换；工厂不得递归访问默认实例。未保留位置的默认发现失败不会发布半成品，之后仍可显式注册。
 
 <a id="spring"></a>
-### 3.5 使用 Spring 的默认 JSON 配置
+### Spring 默认配置
 
-适配模块支持 Spring Framework 6 / Spring Boot 3 的 Jackson 2 `ObjectMapper`。Boot 4 / Jackson 3、Gson 尚未纳入此模块；它按 Spring Bean 的唯一候选或 `@Primary` 规则选 mapper，不扫描 HTTP converter 推测引擎。
+Spring 模块支持 Spring 6 / Boot 3 的 Jackson 2 ObjectMapper。Boot 自动适配唯一或 primary 原生 Bean；宿主 JsonMapper Bean 优先。普通 Spring 显式导入 `org.jetlinks.json.spring.JsonFacadeConfiguration`。没有 Boot 4 / Jackson 3 自动桥接。
 
-Boot 应用添加以下依赖即可；它已传递依赖 API 和 Jackson 2 Provider。Reactor 模块仍按需添加。
+适配使用原生 copy，保留模块、mixin、日期、命名、coercion 和完整 inclusion/filter 策略，不修改源 Bean，也不跟随后续变更。副本执行门面的单根读取、调用方 IO 所有权和不自动补全容器契约。原生自定义 handler 按 Jackson copy 规则共享，须线程安全。
 
-```xml
-<dependency>
-    <groupId>org.jetlinks</groupId>
-    <artifactId>json-facade-spring</artifactId>
-    <version>${json-facade.version}</version>
-</dependency>
-```
-
-Boot 自动配置创建一个可注入的 `JsonMapper`，并提前保留全局默认位置。业务方法或普通业务 Bean 的初始化回调中可直接调用 `Json.global()`；它与注入的门面 Bean 是同一个实例。源 `ObjectMapper` 完成所有 Spring 初始化和 BeanPostProcessor 后才被适配。原生 mapper、其 customizer 和宿主门面 Bean 的构造过程不能反过来依赖这个全局实例，否则会形成循环依赖。`main` 中容器创建前、BeanFactoryPostProcessor 等更早阶段也不能依赖此注册。
-
-门面复制 Spring mapper 的原生配置，保留 `spring.jackson.*`、模块、自定义序列化器、mixin、命名、日期、强制转换和 null/空值策略，包括 `NON_EMPTY` 和自定义过滤器。它不修改源 Bean，也不跟随源后续变更。副本强制单根读取、不关闭调用者 IO、不自动补全未完成容器，并安装中立树支持。因此它遵守门面资源契约，不能用来改变 Spring 的 HTTP codec。
-
-Spring 的原生数字、未知字段、美化等策略被继承，可能与 `JsonOptions.DEFAULT` 不同。读写深度取原生两个上限的较小值，其余原生读取限制保留；增量记录字节预算另行配置。`options().omitNulls()` 只概括可识别的全局 value inclusion，不能描述 content/type/property 规则或自定义过滤器，完整原生行为仍保留。共享的自定义 serializer/handler 应符合 Jackson 自身的线程安全要求。
-
-| 配置 | 默认值 | 行为 |
+| 属性 | 默认 | 作用 |
 | --- | --- | --- |
-| `json.facade.enabled` | `true` | 仅 Boot：是否启用整个自动配置 |
-| `json.facade.global-enabled` | `true` | 是否注册 `Json.global()`；关闭后仍提供可注入 Bean |
-| `json.facade.max-value-bytes` | `8388608` | 适配 mapper 的增量记录字节预算；普通同步整值不受此项限制 |
+| json.facade.enabled | true | Boot 自动配置开关 |
+| json.facade.global-enabled | true | 注册默认全局；关闭后仍可注入 Bean |
+| json.facade.max-value-bytes | 8388608 | 适配 mapper 的增量记录预算；宿主自定义 mapper 自行配置 |
 
-应用自行声明 `JsonMapper` Bean 时优先使用该 Bean，无须另外提供原生 mapper；多门面 Bean 也须满足唯一或 primary 规则，全局门面必须是 singleton。原生 Bean 缺失/歧义、全局已被注册/初始化都会明确失败。提供宿主门面时，其配置由宿主负责，字节预算属性不再应用。
+普通业务 Bean 初始化时可使用全局门面；原生 mapper、customizer 或宿主门面构造中不能反向依赖该全局，以免循环初始化。更早的 BeanFactoryPostProcessor 不能依赖这项注册。默认位置已占用、原生候选缺失/歧义会明确失败，全局门面须为 singleton。
 
-普通 Spring 应用需要可用的 Jackson 2 `ObjectMapper` Bean，并在自己的配置类上添加 `@Import(org.jetlinks.json.spring.JsonFacadeConfiguration.class)`；不需要 Spring Boot 依赖。建议只在应用根上下文导入适配配置。
-
-全局与 API ClassLoader 同寿命，关闭 ApplicationContext 不会 reset。原生 Spring handler 或自定义 serializer 也可能持有容器依赖，不能把全局快照当作可卸载上下文。多上下文、测试上下文重建、插件卸载场景设置 `json.facade.global-enabled=false`，直接注入各自的门面。若启动失败，注册位置仍保留，但 bootstrap 会释放失效 BeanFactory 的引用，再次获取时报告上下文已关闭；重建应用须使用隔离的 API ClassLoader。
-
-非 Spring 宿主也可以使用 `org.jetlinks.json.jackson2.Jackson2Provider.adapt(nativeMapper)` 或 `adapt(nativeMapper, maxValueBytes)` 创建配置快照，再按需注册到默认或命名位置。源 mapper 必须使用 JSON 工厂并支持原生 `copy()`；这不是逐次调用时的配置复制。
+关闭 ApplicationContext 不重置全局。重复上下文应关闭 global-enabled 并注入各自实例；原生 handler 也可能持有容器引用。失败启动会释放 bootstrap 的 BeanFactory 引用，但不取消全局保留位置。普通 Spring 配置入口无需 Reactor/Netty。非 Spring 宿主可用 `Jackson2Provider.adapt(nativeMapper[, maxValueBytes])` 创建同样的配置快照；源须为支持 copy 的 JSON mapper。
 
 <a id="options"></a>
-## 4. 通用配置与限制
+## 通用配置与预算
 
-`JsonOptions` 是不可变 record，当前没有链式 options builder。默认值如下：
+JsonOptions 是不可变 record，九个字段均有具名 withX 副本方法，保留其他配置并复用构造器校验。
 
-| 参数 | 默认值 | 含义 |
+| 字段 | 默认值 | 含义 |
 | --- | --- | --- |
-| `losslessNumbers` | `true` | 无类型小数使用 `BigDecimal`，大整数可使用 `BigInteger`；不把一切数字强制成同一种类型 |
-| `failUnknownProperties` | `false` | 绑定 DTO 时是否拒绝未知字段 |
-| `failDuplicateKeys` | `false` | 是否让原生解析器拒绝对象重复字段 |
-| `omitNulls` | `false` | 原生绑定时是否省略可省略的 null 属性；不是删除任意数组位置的通用开关 |
-| `pretty` | `false` | 常规同步输出是否美化；流式输出始终 compact |
-| `maxDepth` | `256` | 原生解析嵌套深度上限 |
-| `maxStringLength` | `8 * 1024 * 1024` | 原生字符串 token 长度限制，不等同于整篇 UTF-8 字节数 |
-| `maxNumberLength` | `1000` | 原生数字 token 长度限制 |
-| `maxValueBytes` | `8 * 1024 * 1024` | 增量读取的物化记录和流式写出的当前值字节预算 |
-
-沿用默认值，只打开未知字段和重复键拒绝：
+| losslessNumbers | true | 无类型小数保留 BigDecimal，大整数可用 BigInteger |
+| failUnknownProperties | false | DTO 未知字段拒绝 |
+| failDuplicateKeys | false | 原生解析器检测重复字段 |
+| omitNulls | false | 原生绑定的 null 属性策略 |
+| pretty | false | 同步输出美化；流输出始终 compact |
+| maxDepth | 256 | 原生嵌套深度 |
+| maxStringLength | 8 MiB | 原生字符串 token 长度 |
+| maxNumberLength | 1000 | 原生数字 token 长度 |
+| maxValueBytes | 8 MiB | 增量物化记录/流输出当前值字节预算 |
 
 ```java
-JsonOptions defaults = JsonOptions.DEFAULT;
-JsonOptions strict = new JsonOptions(
-    defaults.losslessNumbers(), true, true,
-    defaults.omitNulls(), defaults.pretty(), defaults.maxDepth(),
-    defaults.maxStringLength(), defaults.maxNumberLength(), defaults.maxValueBytes());
-JsonMapper strictMapper = Json.builder().provider("jackson2").options(strict).build();
+JsonOptions options = JsonOptions.DEFAULT.withFailDuplicateKeys(true);
+JsonMapper strict = Json.builder().provider("jackson2").options(options).build();
+JsonReadOptions selected = JsonReadOptions.selectElements(JsonPointer.of("/data/items"))
+    .withNullPolicy(JsonReadOptions.NullPolicy.SKIP);
+JsonWriteOptions output = JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY)
+    .withChunkSize(16 * 1024);
 ```
 
-重复键检测用于拒绝 `{"role":"user","role":"admin"}` 一类存在歧义的输入。检测由实际 Provider 的原生解析器执行，门面不另写 JSON 语法解析。默认关闭；业务需要明确拒绝歧义时开启。检测器会为每个尚未关闭的对象记录已见字段名，超多字段的大对象会增加内存占用。
-
-`maxValueBytes` **不限制同步 `read/write/convert` 整值的总字节数**，也不限制整个流的累计长度。同步大值、源 chunk 大小、累计字节数和超时由宿主另行限制。
-
-流操作的有效值预算取 mapper 与本次 options 的较小值。`JsonReadOptions.of(...)` 和 `JsonWriteOptions.of(...)` 使用静态默认 8 MiB；只增大 mapper 的限制不会增大操作默认限制，需要两边同时设置。不要为处理大数组直接放宽单条记录限制，通常应逐元素处理。
+流操作有效值预算取 mapper 与操作 options 的较小值；两边默认独立为 8 MiB，仅增大 mapper 不会改变操作默认限制。同步整值 read/write/convert、整流累计字节、输入 chunk、并发和超时由宿主另行限制。重复键检测还会保存每个未闭合对象的已见字段名。
 
 <a id="binding"></a>
-## 5. 对象绑定、泛型与转换
-
-### 5.1 常规读写
+## 对象绑定、泛型与转换
 
 ```java
-String json = mapper.write(new Item("device-1", 3));
+String text = mapper.write(new Item("device-1", 3));
 byte[] utf8 = mapper.writeBytes(new Item("device-1", 3));
-Item fromText = mapper.read(json, Item.class);
-Item fromBytes = mapper.read(utf8, JsonType.of(Item.class));
+Item item = mapper.read(utf8, Item.class);
+Item converted = mapper.convert(java.util.Map.of("id", "device-1", "count", 3), Item.class);
+
+JsonType<java.util.List<java.util.Map<String, Item>>> nested =
+    new JsonType<java.util.List<java.util.Map<String, Item>>>() { };
+var result = mapper.read("[{\"first\":{\"id\":\"device-1\",\"count\":3}}]", nested);
 ```
 
-字节 API 使用 UTF-8。同步 `read` 要求恰好一个完整根值，拒绝后续非空白内容；空输入不是 JSON `null`。读取 `"null"` 到引用类型可以返回 Java null。同步 reader/writer 的底层 I/O 仍可能阻塞，不能因为外层用了 Reactor 就把它当成非阻塞操作。
+普通类型直接传 Class：String/byte[]/InputStream/Reader 读取、convert、游标 readValue、readSession 和各传输适配器的 typed 读取都有对应重载。它们一次委托到 JsonType；嵌套泛型继续用匿名捕获、listOf/mapOf 或已有 JDK Type。不要依赖未绑定的类型变量恢复运行时 T。
 
-### 5.2 嵌套泛型
+同步 read 要求完整单根，拒绝尾部非空白；空输入不等于 JSON null。字节 API 使用 UTF-8，字符 IO 保留字符语义；调用方管理传入 IO，底层同步 IO 仍可能阻塞。
 
-```java
-JsonType<List<Map<String, Item>>> nested = new JsonType<List<Map<String, Item>>>() { };
-List<Map<String, Item>> result = mapper.read(
-    "[{\"first\":{\"id\":\"device-1\",\"count\":3}}]", nested);
+Jackson 3 直接使用配置化原生 byte[] 输入/输出；String 输出从 UTF-8 字节解码，与 Writer 输出的 Unicode 转义表示可能不同。Jackson 2 保留流路径以保持 IO decoration 和原始 IO 异常。convert 使用 JSON 绑定语义，不保留对象身份，也不保证零分配。
 
-JsonType<List<Item>> itemList = JsonType.listOf(JsonType.of(Item.class));
-JsonType<Map<String, Item>> itemMap =
-    JsonType.mapOf(JsonType.of(String.class), JsonType.of(Item.class));
-```
-
-匿名类必须直接继承带实参的 `JsonType<...>`。运行时已有 `java.lang.reflect.Type` 可用 `JsonType.of(type)`，返回 `JsonType<?>`。不要用未绑定类型变量的 `new JsonType<List<T>>() { }` 期待自动恢复运行时 `T`。
-
-写入入口接受 `Object`，当前没有 `write(value, JsonType)`。依赖声明泛型或多态类型标记的场景，尤其根集合，需用真实业务样本验证原生配置；不要假定泛型读取与写出完全对称。必要时使用显式 DTO 包装或自己的适配器。
-
-### 5.3 对象转换与数字精度
-
-```java
-Item item = mapper.convert(Map.of("id", "device-1", "count", 3), JsonType.of(Item.class));
-Map<String, Object> fields = mapper.convert(item,
-    new JsonType<Map<String, Object>>() { });
-Object precise = mapper.read("0.1234567890123456789", Object.class); // 默认 BigDecimal
-```
-
-`convert` 使用当前 Provider 的 JSON 绑定语义，包含命名策略、适配器和属性规则。它不是保留引用的 bean copy，也不承诺零序列化或零分配。绑定到明确的 `double` 仍采用该目标类型精度。
-
-日期、Optional、枚举、二进制、多态和注解规则以实际 Provider 配置为准。Jackson 2 默认需要额外官方模块支持 `java.time` / `Optional`，参见 [原生配置](#native)。原生绑定通常将 `byte[]` 写成 Base64 字符串；结构树工厂对 Java 数组的处理不同，见下一节。
+日期、Optional、枚举、二进制、Map 键、多态和注解遵循 Provider 配置。明确绑定 double 仍使用 double 精度。写入接受 Object，没有 write(value, JsonType)；依赖声明泛型或多态标签的根集合应使用真实样本验证，必要时用 DTO 包装。
 
 <a id="tree"></a>
-## 6. JsonObject、JsonArray 与路径访问
-
-### 6.1 创建、修改、读取
+## 树、路径访问与断言
 
 ```java
-JsonObject root = mapper.createObject(Map.of("version", 1));
-JsonArray items = mapper.createArray(List.of(Map.of("id", "device-1", "count", 3)));
-root.put("items", items).put("note", null);
-root.get("items").asArray().add(Map.of("id", "device-2", "count", 4));
-root.remove("version");
+JsonObject root = mapper.createObject(java.util.Map.of("version", 1));
+root.put("items", java.util.List.of(java.util.Map.of("id", "device-1", "count", 3)));
+root.put("note", null);
+root.getArray("items").add(java.util.Map.of("id", "device-2", "count", 4));
 
-JsonValue id = root.at(JsonPointer.of("/items/0/id"));
-String idText = id.asString();
-boolean explicitNull = root.get("note").isNull();     // true
-boolean absent = root.get("unknown").isMissing();     // true
-String json = mapper.write(root);
-```
-
-工厂放在 `JsonMapper` 上，Provider 可以选择存储实现，应用依赖中立接口。当前默认使用 JDK 容器。`JsonValue.object()/array()` 是不带配置的结构快捷方式。
-
-初始 Map/Collection 和 `put/add/set` 会复制嵌套容器，包括已有容器节点。插入 `items` 后再改原 `items`，不会修改 `root` 中的副本；修改应从 `root.get("items")` 取得节点。输入须无环，对象键必须是 String，显式 null 会保留。
-
-`get/at` 缺失时返回 `isMissing()` 为 true 的节点，显式 null 返回 `isNull()` 为 true 的节点，两者都不是 Java null。访问视图携带路径，使用状态方法判断；不要通过与 `NULL/MISSING` 比较对象身份判断。缺失节点的 `toJavaValue()` 会失败。`asObject/asArray` 只接受实际对应形状，类型错误会抛带路径的 `JsonException`。
-
-JSON Pointer 遵循 RFC 6901：空指针 `""` 表示根，`/a~1b/~0key` 访问键 `a/b` 下的 `~key`；数组索引使用 `0`、`1` 等规范十进制，`01` 和 `-` 不作为可读取索引。它不是 JSONPath，不支持通配或条件筛选。
-
-### 6.2 结构复制与绑定转换
-
-```java
-JsonValue parsed = mapper.readTree("{\"items\":[{\"id\":\"device-1\",\"count\":3}]}");
-JsonValue fromBean = mapper.toTree(new Item("device-1", 3));
-JsonObject independent = root.deepCopy();
-Object snapshot = root.toJavaValue(); // 独立的 Map/List 图
-
-String boundBinary = mapper.write(Map.of("data", new byte[] {1, 2}));
-String treeBinary = mapper.write(mapper.createObject(Map.of("data", new byte[] {1, 2})));
-// 默认绑定：{"data":"AQI="}；结构树：{"data":[1,2]}
-```
-
-`createObject/createArray/JsonValue.of` 接受 JSON 兼容标量、Map、Collection 和 Java 数组，不对任意 POJO、Instant 等执行绑定；需要应用命名、日期、适配器或非 String Map 键策略时使用 `mapper.toTree(value)`。`JsonValue.of(existingNode)` 保留节点身份，若要隔离请用 `deepCopy()`。
-
-结构工厂及 `put/add/set` 的数字只接受 JDK 精确类型 `Byte/Short/Integer/Long/Float/Double/BigInteger/BigDecimal`。
-`AtomicInteger/AtomicLong`、自定义 `Number` 和大数类型的子类会抛出 `IllegalArgumentException`，
-避免可变数字穿透树、导出和复制的隔离。需要绑定这些 Java 对象时使用 `mapper.toTree(value)`；
-例如 `mapper.toTree(Map.of("n", new AtomicInteger(7)))` 会由 Provider 产生独立数字值。
-自定义原生反序列化器可能返回共享容器，因此树绑定结果仍需防御复制，不能仅凭“刚解析完成”就接管其存储。
-
-树当前没有字段迭代器，也没有数组 `remove/insert/clear`；遍历未知对象字段可导出 Map 快照，但会复制。需要高吞吐遍历大文档时用游标或事件，避免反复导出。当前默认树节点的 `equals` 不做结构比较；需要比较 JSON 数据时可比较导出的 Java 值，并另外明确数字类型/scale 的比较规则。
-
-### 6.3 类型转换与安全链式读取
-
-```java
-JsonObject root = mapper.readTree(
-    "{\"config\":{\"port\":\"1883\"},\"items\":[{\"count\":3}]}").asObject();
-
-int port = root.get("config").get("port").asInt();
-Integer count = root.getArray("items").getObject(0).get("count").asInteger();
+JsonPointer idPath = JsonPointer.of("/items/0/id");
+String id = root.at(idPath).asString();
+boolean explicitNull = root.get("note").isNull();
+boolean absent = root.get("unknown").isMissing();
 int fallback = root.get("unknown").getArray("items").get(0).asInt(10);
-Integer absent = root.get("").getArray("").get(0).asInteger(); // null
-Device device = root.get("device").as(Device.class);
-List<Item> items = root.get("items").as(new JsonType<List<Item>>() {});
+JsonObject independent = root.deepCopy();
+Object snapshot = root.toJavaValue();
 ```
 
-类型转换位于共同接口 `JsonValue`，对象、数组、根节点和 Pointer 访问都可复用。
-`asInt/asLong/asDouble/asFloat/asShort/asByte/asBoolean` 返回基本类型；
-`asString/asInteger/asBigDecimal/asBigInteger` 返回引用类型。其他可空包装类型、
-DTO、枚举和嵌套泛型统一使用 `as(Class)` / `as(JsonType)`。
+createObject/createArray、put/add/set 和导出/复制会隔离嵌套容器；插入原容器后再修改原容器，不影响目的树。输入须无环且对象键为 String。JsonValue.of(existingNode) 保留节点身份，隔离请用 deepCopy。
 
-缺失或 JSON null 时，基本类型快捷方法返回 0/false，引用类型及泛型方法返回 null；
-快捷方法都提供显式默认值重载。默认值只作用于原始缺失/null。实际值的数字字符串、
-溢出、空字符串 coercion、日期和自定义适配器行为遵守所属 Provider 配置；
-实际转换失败会抛异常。泛型 `as` 使用包装类表达可空值，基本类型优先使用快捷方法。
+结构工厂接受 JSON 标量、Map、Collection 与 Java 数组，不绑定任意 POJO；使用 mapper.toTree(bean) 应用命名、日期和适配器。结构 byte[] 是数字数组，原生绑定通常为 Base64。结构数字只接受精确的 JDK Byte/Short/Integer/Long/Float/Double/BigInteger/BigDecimal，拒绝可变 Number、自定义 Number 和大数子类；这些对象可通过 toTree 绑定。
 
-`getObject/getArray` 同时接受字段名和数组索引，返回非 null 的对应类型视图。
-缺失、null 和数组越界后仍可继续访问；后续访问记录完整尝试路径。直接取到的
-null 视图保留 `isNull()`，继续读取不存在的子位置得到缺失节点。缺失/null 视图
-只读，修改会失败，不会自动创建数据；实际空容器仍可修改。具名/索引类型访问会
-检查接收方和子节点的结构，类型错误会抛异常。`asObject/asArray` 是严格视图检查，
-不会把缺失/null 转为容器。
+### 访问、转换与位置
 
-通过 mapper 工厂、`readTree/toTree`、直接绑定树类型、DTO 树字段、游标和流式绑定
-创建的树使用该 mapper；嵌套访问与深复制继续保留配置。`deepCopy()` 创建新的根路径，
-插入另一棵树后使用目的位置的路径与 mapper。`as(JsonObject.class)` 是绑定转换，
-可产生独立树；`asObject()` 返回现有视图。
-`JsonValue.object/array/of` 保持无配置结构工厂语义：缺失/null 的安全访问和默认值
-仍可用，实际值转换请使用 `mapper.convert(node, type)` 或先通过 `mapper.toTree`
-生成带配置的树。这里不会隐式查找 global。
-
-### 6.4 断言、自定义异常与访问路径
+- missing/null 都是非 Java null 视图；使用 isMissing/isNull，不比较单例身份。缺失导出失败。
+- getObject/getArray 支持名称和索引，缺失/null 可链式访问且不自动创建数据；实际形状不符会失败。asObject/asArray 严格要求实际容器。
+- asInt/asLong 等基本类型在缺失/null 时返回零/false；asString/asInteger 等引用类型返回 null，也可显式指定默认值。实际值的转换失败不会用默认值吞掉。
+- present 值按所属 mapper 转换。mapper 创建、绑定的树和 deepCopy 保留配置；静态 JsonValue.object/array/of 无配置，实际值转换需显式 mapper.convert。
+- JsonPointer 为 RFC 6901，不是 JSONPath；空字符串表示根，~1/~0 转义斜线/波浪号，数组索引用规范十进制，不能用 01 或 - 读取。
+- 固定路径可复用编译 Pointer；默认树融合定位只创建最终视图，遍历为 O(d)。缓存父视图后祖先被替换，旧视图仍指向原容器，需重新从根定位。
+- 路径保存段信息，不保留祖先树。deepCopy 从根开始，插入采用目的路径。节点不承诺结构 equals；未知字段遍历可导出 Map 快照，大文档改用游标/事件。
 
 ```java
-Integer required = root.get("a").getObject("b").get("c")
+Integer port = root.get("config").get("port")
     .requireNonNull(failure ->
         new IllegalArgumentException(failure.displayPath() + " 不能为空"))
     .asInteger();
-
 root.get("items").require(value -> value.size() > 0);
 ```
 
-`requirePresent()` 要求位置存在，允许 JSON null；`requireNonNull()` 同时拒绝缺失/null，
-允许空字符串和空容器；`require(predicate)` 支持其他条件。成功返回当前节点。
-三种方法均可提供 `Function<JsonFailure, RuntimeException>`，工厂只在失败时执行；
-其返回的异常实例直接抛出，谓词自身抛出的异常也保持原样。工厂须返回非 null 异常。
-默认断言失败使用 `JsonException.Kind.VALIDATION`。
+requirePresent 允许 JSON null，requireNonNull 同时拒绝缺失/null，require 接受谓词。成功返回当前节点；异常工厂只在失败时调用，返回的异常实例和谓词异常原样传播。默认失败为 VALIDATION。
 
-`JsonFailure` 包含 `kind/reason/message/pointer/displayPath/cause`。
-`JsonException` 提供 `failure()`、`kind()`、`reason()`、`pointer()`、
-`displayPath()` 及标准 `getCause()`。reason 区分 MISSING、NULL、TYPE_MISMATCH、
-CONVERSION、ASSERTION；其他操作使用 UNSPECIFIED。未知位置为 null，空 Pointer 表示根。
-Pointer 的 `toString()` 返回 RFC 6901 编码，例如 `/a~1b/items/0`；
-展示路径例如 `a.items[0].id`，含特殊字符的键写为 `a["b.c"]`。
-即使中间字段已经缺失，最终断言也能报告完整访问路径。
-
-Provider 负责归一化解析、绑定、限制和 JSON I/O 错误，并保留原始 cause；
-树层将访问路径与原生转换错误的字段/数组路径拼接，不通过解析消息猜测路径。
-断言工厂的业务异常、响应式上游错误和普通 API 参数异常遵守各自的透传约定。
-在原生序列化/反序列化器内部抛出的错误仍属于 Provider 绑定边界。
-
-路径只保存不可变字段/索引段，不引用父节点；路径字符串、Pointer 和失败上下文按需生成。
-访问子节点不复制整棵树。原生绑定转换仍可能分配 token 缓冲，链式调用也会创建轻量视图，
-不能据此宣称零分配；大文档继续优先使用游标或结构事件。
+JsonFailure 提供 kind/reason/message/pointer/displayPath/cause；reason 区分 MISSING、NULL、TYPE_MISMATCH、CONVERSION、ASSERTION。未知位置为 null，空 Pointer 为根。转换错误会拼接访问路径与原生结构化绑定路径，例如 /items/0/count 和 items[0].count。
 
 <a id="adapter"></a>
-## 7. 自定义类型适配器
+## 中立适配器与原生配置
 
-中立扩展适合业务值对象编码。以下声明放在类体中，将 `DeviceId` 写成字符串：
+中立模块按精确 Class 注册，不自动覆盖子类，也不按泛型 Type 注册。以下类型声明放在类体内：
 
 ```java
 public record DeviceId(String value) { }
 
-public static final class DeviceIdModule implements JsonModule {
-    @Override
-    public String id() {
-        return "device-id";
-    }
+public static final class DeviceIdModule implements org.jetlinks.json.spi.JsonModule {
+    public String id() { return "device-id"; }
 
-    @Override
-    public void configure(JsonModuleContext context) {
-        context.add(DeviceId.class, new JsonAdapter<DeviceId>() {
-            @Override
+    public void configure(org.jetlinks.json.spi.JsonModuleContext context) {
+        context.add(DeviceId.class, new org.jetlinks.json.spi.JsonAdapter<DeviceId>() {
             public void write(DeviceId value, JsonWriter writer) {
                 writer.string(value.value());
             }
-
-            @Override
             public DeviceId read(JsonReader reader) {
-                return new DeviceId(reader.readValue(JsonType.of(String.class)));
+                return new DeviceId(reader.readValue(String.class));
             }
         });
     }
 }
 ```
 
-注册和使用：
-
 ```java
 JsonMapper customized = Json.builder().provider("jackson2")
     .module(new DeviceIdModule()).build();
-String encoded = customized.write(new DeviceId("device-1")); // "device-1"
-DeviceId decoded = customized.read(encoded, DeviceId.class);
+DeviceId id = customized.read("\"device-1\"", DeviceId.class);
 ```
 
-适配器按**精确 Class** 匹配，不自动覆盖子类/实现类，也没有按泛型 Type 注册的入口。模块 id 与同一 mapper 的 Class 注册不能重复。
-
-适配器同步运行于调用线程，实例须线程安全。reader/writer 是借用游标，不能关闭或保留；读取须消费当前完整值，写入须产生恰好一个值。`writer.value(...)` 使用正常绑定，不能把同一个待编码对象重新交给自己的适配器，否则会递归。`string/number/bool/nullValue` 直接写 token，绕过相应 Java 标量类型适配器。
-
-Java null 不调用适配器，遵循 mapper 的 null 策略。模块装配和适配器中不要执行远程 I/O；业务异步操作放在 JSON 转换前后的响应式链路中。
+模块 id 和同一 mapper 的 Class 适配器不得重复。适配器须线程安全；游标是借用对象，不关闭、不保留，读取/写入恰好一个完整值。Java null 不调用适配器。writer.value 使用正常绑定，不要把对象重新交给其自身适配器；直接 token 方法绕过对应标量适配器。
 
 <a id="native"></a>
-## 8. Provider 原生配置
-
-### 8.1 命名策略和原生模块
-
-通过构建期的 `configureNative` 借用原生 builder，无需门面为每个引擎功能增加专用方法：
+### 原生能力复用
 
 ```java
 JsonMapper snakeCase = Json.builder().provider("jackson2")
     .configureNative(com.fasterxml.jackson.databind.json.JsonMapper.Builder.class,
-        nativeBuilder -> nativeBuilder.propertyNamingStrategy(
+        builder -> builder.propertyNamingStrategy(
             com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE))
     .build();
-
-JsonMapper snakeCase3 = Json.builder().provider("jackson3")
-    .configureNative(tools.jackson.databind.json.JsonMapper.Builder.class,
-        nativeBuilder -> nativeBuilder.propertyNamingStrategy(
-            tools.jackson.databind.PropertyNamingStrategies.SNAKE_CASE))
-    .build();
 ```
 
-Jackson 2 使用日期/Optional 时，应用额外添加与 Jackson 匹配的依赖：
+Jackson 3 使用 tools.jackson.databind.json.JsonMapper.Builder 和对应命名策略类。mixin、原生模块、日期规则直接在此配置。Jackson 2 使用 java.time/Optional 时添加匹配版本的 jackson-datatype-jsr310/jdk8，并在回调注册 JavaTimeModule/Jdk8Module；Jackson 3 已集成常见 JDK 类型支持，迁移仍需核对日期精度、时区和空值。
 
-```xml
-<dependency>
-    <groupId>com.fasterxml.jackson.datatype</groupId>
-    <artifactId>jackson-datatype-jsr310</artifactId>
-    <version>2.22.3</version>
-</dependency>
-<dependency>
-    <groupId>com.fasterxml.jackson.datatype</groupId>
-    <artifactId>jackson-datatype-jdk8</artifactId>
-    <version>2.22.3</version>
-</dependency>
-```
-
-```java
-JsonMapper dates = Json.builder().provider("jackson2")
-    .configureNative(com.fasterxml.jackson.databind.json.JsonMapper.Builder.class, nativeBuilder -> {
-        nativeBuilder.addModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
-        nativeBuilder.addModule(new com.fasterxml.jackson.datatype.jdk8.Jdk8Module());
-        nativeBuilder.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-    })
-    .build();
-String instant = dates.write(java.time.Instant.parse("2026-01-01T00:00:00Z"));
-```
-
-Jackson 3 的这些常见 JDK 类型支持已并入引擎；迁移时仍应验证时间字符串、时区、精度和 Optional 空值行为，不照搬 Jackson 2 模块坐标。
-
-### 8.2 Mixin 示例
-
-以下类型声明使用 Jackson 2 的注解，隐藏第三方 DTO 的敏感属性：
-
-```java
-public record Account(String name, String secret) { }
-
-public abstract static class AccountMixin {
-    @com.fasterxml.jackson.annotation.JsonIgnore
-    public abstract String secret();
-}
-```
-
-```java
-JsonMapper masked = Json.builder().provider("jackson2")
-    .configureNative(com.fasterxml.jackson.databind.json.JsonMapper.Builder.class,
-        nativeBuilder -> nativeBuilder.addMixIn(Account.class, AccountMixin.class))
-    .build();
-String accountJson = masked.write(new Account("operator", "private")); // 仅 name
-```
-
-### 8.3 配置优先级与生命周期
-
-每次 `build()` 创建独立的原生 builder。所有回调类型先整体检查，再按注册顺序同步执行；类型不匹配在执行任何回调前失败。回调失败包装为 `CONFIGURATION` 并保留 cause。回调可用于原生模块、mixin、命名和日期格式，不能保留 builder、发布它、做 I/O 或修改已发布 mapper。
-
-`JsonOptions` 管理的共享策略具有权威性。原生回调如果更改 pretty、未知字段、无损数字、重复键、全局 null inclusion 或受管限制，导致与 `JsonOptions` 冲突，构建会失败。单根读取、调用方 I/O 所有权和不自动修补残缺文档的约束也不能关闭。调整共享策略请设置 `JsonOptions`，不要依赖回调覆盖顺序。构建校验针对配置值，不会证明用户自定义序列化器的任意代码都遵守约束。
-
-门面没有共享可变原生 mapper getter。必须执行原生专有操作的代码应在明确的集成边界管理自己的原生实例。旧实验入口 `Jackson2Extension/Jackson3Extension` 已移除，当前统一使用 `configureNative`。
+每次 build 使用新原生 builder，先检查全部回调类型再顺序执行。类型不符、回调失败或与 JsonOptions 管理策略冲突都会失败；不要依赖回调覆盖共享策略。不能保留 builder、修改已发布 mapper 或在回调执行 IO。没有共享可变原生 mapper getter，专有原生操作由宿主管理其边界。
 
 <a id="cursor"></a>
-## 9. 同步游标与文件处理
+## 同步文件与游标
 
-### 9.1 调用方管理文件资源
-
-以下为类内方法声明。`InputStream/Reader` 读取需传 `JsonType`，没有 Class 重载：
+普通文件由调用方关闭；门面释放自己的解析/写入状态：
 
 ```java
-static Item readFile(JsonMapper mapper, Path path) throws IOException {
-    try (InputStream input = Files.newInputStream(path)) {
-        return mapper.read(input, JsonType.of(Item.class));
-    }
-}
-
-static void writeFile(JsonMapper mapper, Path path, Item item) throws IOException {
-    try (OutputStream output = Files.newOutputStream(path)) {
-        mapper.write(item, output);
+static Item readFile(JsonMapper mapper, java.nio.file.Path path) throws java.io.IOException {
+    try (var input = java.nio.file.Files.newInputStream(path)) {
+        return mapper.read(input, Item.class);
     }
 }
 ```
 
-`write(value, Writer)` 与 `read(Reader, JsonType)` 处理字符；字节 API 使用 UTF-8。门面不关闭传入的 I/O，文件、Socket 等真实资源由创建它们的调用方关闭。
-
-### 9.2 逐项读取同步数组
-
-以下方法不收集数组，`consume` 逐条处理有限大小的 Item：
+根数组逐项读取，不收集整个文件：
 
 ```java
-static void consumeArray(JsonMapper mapper, InputStream input, Consumer<Item> consume) {
+static void consumeArray(JsonMapper mapper, java.io.InputStream input,
+                         java.util.function.Consumer<Item> consume) {
     try (JsonReader reader = mapper.reader(input)) {
         if (reader.next() != JsonToken.START_ARRAY) {
             throw new IllegalArgumentException("Expected a root array");
@@ -611,7 +312,7 @@ static void consumeArray(JsonMapper mapper, InputStream input, Consumer<Item> co
             if (token == null) {
                 throw new IllegalArgumentException("Incomplete array");
             }
-            consume.accept(reader.readValue(JsonType.of(Item.class)));
+            consume.accept(reader.readValue(Item.class));
         }
         if (reader.next() != null) {
             throw new IllegalArgumentException("Unexpected trailing value");
@@ -620,12 +321,10 @@ static void consumeArray(JsonMapper mapper, InputStream input, Consumer<Item> co
 }
 ```
 
-`readValue` 消费整个当前值，下次 `next()` 返回其后继。`skipValue()` 同样跳过当前完整子树，不物化它；`next()` 返回 null 才是 EOF。`text()` 可读取当前字段名或标量文本。游标本身允许调用方手动组织处理，示例额外检查尾部以保证单根文档。
-
-### 9.3 逐项写出同步数组
+readValue/skipValue 消费当前完整值，下次 next 返回后继；next 返回 null 才是 EOF。text 读取字段名或标量文本。写出可组合结构与绑定：
 
 ```java
-static void writeArray(JsonMapper mapper, OutputStream output, Iterable<Item> items) {
+static void writeArray(JsonMapper mapper, java.io.OutputStream output, Iterable<Item> items) {
     try (JsonWriter writer = mapper.compactWriter(output)) {
         writer.beginArray();
         for (Item item : items) {
@@ -637,302 +336,150 @@ static void writeArray(JsonMapper mapper, OutputStream output, Iterable<Item> it
 }
 ```
 
-`writer(...)` 遵循同步 pretty 策略，`compactWriter(...)` 为当前操作选择 compact，`writeCompact(value, output)` 则直接写一个 compact 值。它们不修改共享 mapper。`compactWriter` 不自动在多个根值间插入分隔符；多记录分帧由调用方负责。
-
-`beginObject/endObject/name` 用于对象，`string/bool/nullValue/number` 直接写标量。`number("1.2300e+10")` 校验 JSON 数字语法，无需转成 double，也不能用来注入 raw JSON。关闭 writer 释放状态但不补缺失括号；业务失败时不能把残缺输出当作成功文档。
+writer 遵循 pretty，compactWriter/writeCompact 只为本次操作使用 compact。number("1.2300e+10") 校验完整数字语法，不经过 double，也不是 raw 注入。关闭不补残缺括号；多个根值的分隔由调用方负责。
 
 <a id="read-stream"></a>
-## 10. Reactor 流式读取
+## Reactor 流式读取
 
-### 10.1 根数组、NDJSON 与多根值
-
-以下输入只是便于展示的内存样本，真实业务可直接传入网络或文件读取产生的 `Publisher<byte[]>`：
+输入 chunks 是 Publisher<byte[]>，可以切在任意 UTF-8/token 位置，不代表记录边界：
 
 ```java
-Flux<byte[]> chunks = Flux.just(
-    "[{\"id\":\"device-1\",".getBytes(StandardCharsets.UTF_8),
-    "\"count\":3},{\"id\":\"device-2\",\"count\":4}]".getBytes(StandardCharsets.UTF_8));
-Flux<Item> items = streams.readBytes(chunks, JsonType.of(Item.class),
+Flux<Item> items = streams.readBytes(chunks, Item.class,
     JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
-
-Flux<byte[]> lines = Flux.just(
-    "{\"id\":\"device-1\",\"count\":3}\n{\"id\":\"device-2\",\"count\":4}\n"
-        .getBytes(StandardCharsets.UTF_8));
-Flux<Item> imported = streams.readBytes(lines, JsonType.of(Item.class),
-    JsonReadOptions.of(JsonReadOptions.Mode.NDJSON));
+Flux<Item> selected = streams.readBytes(chunks, Item.class,
+    JsonReadOptions.selectElements(JsonPointer.of("/data/items")));
 ```
 
-| 读取模式 | 输入示例 | 发出内容 | 空输入 |
-| --- | --- | --- | --- |
-| `SINGLE_VALUE` | `[1,2]` | 一个 List（目标类型须匹配） | 失败 |
-| `ARRAY_ELEMENTS` | `[1,[2,3]]` | `1`、完整的 `[2,3]` | 失败；`[]` 正常完成 |
-| `NDJSON` | 每行一个值 | 每个非空行的值 | 零条记录 |
-| `ROOT_VALUES` | `1 true {"a":2}` | 三个完整根值 | 零条记录 |
+| 模式 | 行为 | 空输入 |
+| --- | --- | --- |
+| SINGLE_VALUE | 一个完整根值 | 失败 |
+| ARRAY_ELEMENTS | 根数组直接元素 | 失败；空数组正常完成 |
+| NDJSON | 每个非空行一个值，LF/CRLF，末尾 LF 可省 | 零条记录 |
+| ROOT_VALUES | JSON 空白分隔的根值，不展开数组 | 零条记录 |
 
-NDJSON 支持 LF/CRLF、空白行和无末尾换行，拒绝跨行记录或一行多个根值。ROOT_VALUES 要求 JSON 空白分隔，不自动展开数组。输入 chunk 可以切在任意 UTF-8/token 位置；它既不是记录边界，也不是真 EOF。不要自行按 chunk 调用 `mapper.read`。
+NDJSON 不接受裸 CR、跨行记录或同行多个根。selection 仅用于 SINGLE_VALUE；selectValue 绑定完整目标，selectElements 发出目标数组直接元素。路径缺失、形状错误或重复出现都会失败，即使重复键检测关闭。无关子树仍校验语法和 token/depth，但不物化。take/取消只验证消费前缀，整篇校验须消费到完成。
 
-### 10.2 从包装文档中选取数组
+Reactor 不允许 Java null，默认 FAIL；可用 withNullPolicy(SKIP)，或读为 JsonValue 保留 JSON null。readBuffers 接受 heap/direct/read-only/slice ByteBuffer，在适配器收到输入时立即复制，保留源 cursor。
 
-```java
-Flux<byte[]> wrapped = Flux.just(
-    "{\"meta\":{\"version\":1},\"data\":{\"items\":[{\"id\":\"device-1\",\"count\":3}]},\"summary\":{}}"
-        .getBytes(StandardCharsets.UTF_8));
-JsonReadOptions selected = new JsonReadOptions(
-    JsonReadOptions.Mode.SINGLE_VALUE,
-    new JsonReadOptions.Selection(JsonPointer.of("/data/items"), true),
-    JsonReadOptions.NullPolicy.FAIL, 8 * 1024 * 1024);
-Flux<Item> selectedItems = streams.readBytes(wrapped, JsonType.of(Item.class), selected);
-```
-
-`Selection(..., true)` 发出目标数组的直接元素，`false` 绑定目标完整值。selection 仅允许 SINGLE_VALUE。路径缺失、目标形状错误都会失败，空选中数组正常完成。
-
-无关子树仍由原生解析器校验并受 token/depth 限制，但不收集成树。选中路径重复出现始终失败，即使全局重复键检测关闭，因为已经发出的元素无法撤回以模拟最后值覆盖。消费者需要验证整篇文档时，必须消费至完成；`take(1)` 或取消只验证已经消费的前缀。
-
-### 10.3 null 和 ByteBuffer
-
-```java
-Flux<JsonValue> nodes = streams.readBytes(
-    Flux.just("[null,{\"id\":\"device-1\"}]".getBytes(StandardCharsets.UTF_8)),
-    JsonType.of(JsonValue.class), JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
-// 第一项是非 Java null 的 JsonValue.NULL。
-
-JsonReadOptions skipNulls = new JsonReadOptions(JsonReadOptions.Mode.ARRAY_ELEMENTS,
-    null, JsonReadOptions.NullPolicy.SKIP, 8 * 1024 * 1024);
-Flux<Item> nonNull = streams.readBytes(
-    Flux.just("[null,{\"id\":\"device-1\",\"count\":3}]".getBytes(StandardCharsets.UTF_8)),
-    JsonType.of(Item.class), skipNulls);
-
-Flux<Item> fromBuffers = streams.readBuffers(
-    Flux.just(ByteBuffer.wrap("[]".getBytes(StandardCharsets.UTF_8))),
-    JsonType.of(Item.class), JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
-```
-
-Reactor 不能发出 Java null，默认 `NullPolicy.FAIL`。明确不需要 null 记录时用 SKIP；需要保留时读为 `JsonValue`。`readBuffers` 支持堆、直接、只读和 slice buffer，保留输入 position/limit/mark；具体生命周期见 [资源所有权](#ownership)。
-
-### 10.4 连接业务处理
-
-以下为类内方法声明，保存操作由调用方提供。返回的 Mono 交给宿主订阅：
-
-```java
-static Mono<Void> importItems(JsonStreamMapper streams, Flux<byte[]> chunks,
-                              java.util.function.Function<Item, Mono<Void>> save) {
-    return streams.readBytes(chunks, JsonType.of(Item.class),
-            JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS))
-        .concatMap(save, 0)
-        .then();
-}
-```
-
-串行保存保留顺序；业务可按数据库/远程服务容量设计有限并发或有限批次。不要在业务链里 `block()`、内部 `subscribe()` 或收集全部记录。解析失败前已经完成的保存不会回滚，导入的事务、幂等键、失败记录和重试边界由业务设计。不能用 `onErrorContinue` 恢复一个已经损坏的解析会话。
+业务保存可用 `items.concatMap(save, 0).then()` 串行执行；按宿主容量设置有限并发/批次。返回 Publisher 给宿主订阅，不在 JSON 链内 block/subscribe 或收集整个流。解析失败不回滚已完成的保存，事务、幂等和重试由业务负责；损坏 session 不能用 onErrorContinue 恢复。
 
 <a id="write-stream"></a>
-## 11. Reactor 分块写出
+## Reactor 分块写出
 
 ```java
-Flux<Item> items = Flux.just(new Item("device-1", 3), new Item("device-2", 4));
-JsonWriteOptions arrayOutput = new JsonWriteOptions(
-    JsonWriteOptions.Format.ARRAY, 16 * 1024, 8 * 1024 * 1024);
-Flux<byte[]> arrayBytes = streams.writeBytes(items, arrayOutput);
-Flux<ByteBuffer> ndjsonBuffers = streams.writeBuffers(items,
+JsonWriteOptions output = JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY)
+    .withChunkSize(16 * 1024);
+Flux<byte[]> bytes = streams.writeBytes(items, output);
+Flux<java.nio.ByteBuffer> buffers = streams.writeBuffers(items,
     JsonWriteOptions.of(JsonWriteOptions.Format.NDJSON));
 ```
 
-将结果直接交给宿主响应/文件写入组件；不要为了输出再 `collectList()` 或拼成一个 String。这里的 `items` 是冷的内存示例，可独立订阅；真实单次消费数据源不能假定可重复订阅。
-
-| 写出格式 | 行为 | 空源 |
+| 格式 | 行为 | 空源 |
 | --- | --- | --- |
-| `SINGLE_VALUE` | 必须恰好一条值 | 失败，多条也失败 |
-| `ARRAY` | 数组包围所有记录 | `[]` |
-| `NDJSON` | 每条 compact 值后接 LF | 零字节 |
-| `ROOT_VALUES` | 当前实现同样以 LF 分隔根值 | 零字节 |
+| SINGLE_VALUE | 恰好一个完整值，多条失败 | 失败 |
+| ARRAY | 数组包围所有记录 | [] |
+| NDJSON / ROOT_VALUES | 每条 compact 值后接 LF | 零字节 |
 
-`JsonWriteOptions.of` 默认 `chunkSize=8192`、`maxValueBytes=8 MiB`。chunkSize 控制分段大小，分段不对应记录、字段或 UTF-8 字符边界，消费端应按字节流处理。记录字节预算与传输分隔符分开核算。
+默认 chunkSize=8192，maxValueBytes=8 MiB；withChunkSize/withMaxValueBytes 保留其他设置。分段可能切开字符或字段，不等于记录；分隔符预算与值分开核算。
 
-流输出始终 compact，即使共享 mapper 开启 pretty；其他绑定模块和策略继续生效。内部按订阅复用原生 writer，但每个绑定值使用新的绑定上下文，避免对象 ID 状态跨记录累积。
-
-背压控制下游可见的段，不会把任意 POJO 的原生序列化暂停在任意字节处。一个有界 POJO 会完整同步编码为自有分段，再逐段交付；需更细粒度推进大型聚合时使用事件结构。错误和取消不会补正常的数组结束括号，已经发出的字节无法回滚；多个 SINGLE_VALUE 的错误也可能发生在第一条字节发出之后。
+每订阅复用原生 compact writer，每记录使用新绑定上下文，避免 object ID 跨记录积累。一个有限 POJO 会同步编码为自有分段后按需求交付，不能在任意字节处暂停原生 serializer。大型聚合使用结构事件。失败/取消不会补成功尾括号，已发字节无法撤回。
 
 <a id="netty"></a>
-### 11.1 Netty ByteBuf 支持
+## Netty ByteBuf
 
-增加 `org.jetlinks:json-facade-netty:${json-facade.version}`，它传递依赖 Reactor
-适配器和 Netty buffer/common，运行时不依赖 Reactor Netty。当前验证版本为
-Netty `4.1.138.Final`；下面的网络例子使用宿主已有的 Reactor Netty。
+使用宿主 allocator；以下片段位于已有 inbound/outbound 的 Reactor Netty 处理器中：
 
 ```java
-import org.jetlinks.json.netty.NettyJsonStreamMapper;
-
-NettyJsonStreamMapper netty = NettyJsonStreamMapper.of(mapper, outbound.alloc());
-Flux<Item> items = netty.read(inbound.receive(), JsonType.of(Item.class),
+var netty = org.jetlinks.json.netty.NettyJsonStreamMapper.of(mapper, outbound.alloc());
+Flux<Item> items = netty.read(inbound.receive(), Item.class,
     JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
-// receive() 会释放自己的引用；read() 会持有并最终释放另一个引用。
-// 在解析之后组合业务异步处理，避免把未 retain 的 ByteBuf 放进异步队列。
 return outbound.send(netty.write(items,
-    new JsonWriteOptions(JsonWriteOptions.Format.ARRAY, 8192, 8 * 1024 * 1024)));
-```
-
-`read/readEvents` 借用输入，在输入交付的 onNext 内 retain 一个引用。源仍负责
-释放自己的原始引用；直接传入 `receive()` 即可，不要再额外调用 `retain()`。
-普通 `Publisher<ByteBuf>` 若把一个引用交给订阅者释放，使用
-`readOwned/readOwnedEvents`，适配器消费这个引用，调用方不再释放它：
-
-```java
-Flux<ByteBuf> owned = Flux.defer(() -> Flux.just(
-    Unpooled.copiedBuffer("[1,2]", StandardCharsets.UTF_8)));
-Flux<Integer> values = netty.readOwned(owned, JsonType.of(Integer.class),
-    JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
-```
-
-源负责尚未交付的缓冲区，包括自己队列内的丢弃。若确实要在解析之前增加
-`publishOn`，必须在该边界之前 retain，在队列上配置相应的 discard 清理，
-然后交给 `readOwned`；解析之后的业务异步处理通常更直接。retain 仅保证内存
-存活，不隔离并发修改；在租约释放前，不能改写底层字节或复合缓冲区组件。
-
-输入支持 heap/direct、slice、只读缓冲区和 composite，保持 reader/writer index。
-复合输入按 NIO 组件推进，不合并为连续数组；不能暴露 NIO view 的自定义
-ByteBuf 明确失败。解析完成、失败或取消后释放适配器拥有的引用；若取消发生
-在 native/自定义回调中，回调返回后才关闭解析器、释放其输入。
-
-`write/writeEvents` 直接写入传入 allocator 分配的有界 ByteBuf，保留其 heap/direct
-偏好。尾段调整 readable range，不复制裁剪。每个发出的段转移一个引用给下游；
-`outbound.send` 接管被接受的段。普通消费端须在使用后 release，并为自己增加的
-异步队列等配置 discard 清理：
-
-```java
-Flux<ByteBuf> buffers = netty.write(items,
-        JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY))
-    .publishOn(outputScheduler, 8)
-    .doOnDiscard(ByteBuf.class, ByteBuf::release);
-return outbound.send(buffers);
-```
-
-复杂文档可直接使用 `netty.writeEvents(netty.readEvents(inbound.receive()), options)`，
-options 使用 `SINGLE_VALUE`，也可按第 12 节逐个构造事件。数组、NDJSON、根值序列、
-Pointer selection 和绑定策略与普通 Reactor 入口一致。网络协议仍须提供正确的
-文档边界/EOF；TCP 单次 read、ByteBuf 或输出段均不代表一个完整 JSON 文档。
-
-输入省掉门面整块复制；输出省掉中间 byte[] 分段和尾部裁剪，但原生 generator
-编码缓冲区写入 ByteBuf 仍有一次复制，token 解码/Java 对象绑定也仍有分配。
-池化内存的 reserved 大小与仍被引用的 pinned 大小不同；小记录、heap/direct 和
-真实网络栈的收益应分别测量。
-
-<a id="databuffer"></a>
-### 11.2 Spring DataBuffer 支持
-
-使用 `json-facade-spring` 和 `json-facade-reactor`，通过
-`DataBufferJsonStreamMapper` 直接处理 `Publisher<DataBuffer>`。Reactor 是 Spring
-模块的可选依赖，因此调用方需要显式添加 `json-facade-reactor`；仅使用 Spring
-默认 mapper/global 接入时不需要 Reactor 或 Netty。
-
-下面的方法体用于 Spring `ServerHttpRequest request`、`ServerHttpResponse response`
-所在的响应式处理器，返回值交给框架订阅：
-
-```java
-import org.jetlinks.json.spring.DataBufferJsonStreamMapper;
-
-DataBufferJsonStreamMapper streams = DataBufferJsonStreamMapper.of(
-    Json.global(), response.bufferFactory());
-Flux<Item> items = streams.read(request.getBody(), JsonType.of(Item.class),
-    JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
-return response.writeWith(streams.write(items,
     JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY)));
 ```
 
-工厂由宿主提供，可用 `DefaultDataBufferFactory` 的 heap/direct 存储或
-`NettyDataBufferFactory` 的池化存储；适配器的运行时不依赖 Netty，也可传入显式
-构建或命名配置的 mapper。这里手动组合请求/响应数据，不改变框架默认 JSON codec。
+read/readEvents 在输入 onNext 中 retain 一个引用，receive 仍释放自己的引用。若源把一个引用直接移交订阅者，用 readOwned/readOwnedEvents；不要重复释放或 retain。上游负责未交付缓冲和自己的队列，租约结束前字节与组件须稳定。
 
-`read/readEvents` **接管每个已交付 DataBuffer 的释放责任，不额外 retain**，可直接
-接入 Spring 的 `request.getBody()`。上游负责未交付缓冲和自身队列；消费者不要重复
-释放已转交的引用。调用方保留额外池化引用时，应先 retain，并自行释放那一个引用。
-所有共享字节和组件在消费结束前须保持稳定。输入 read/write position 保持不变。
+heap/direct、slice、只读和 composite 输入保持 indices，按 NIO 组件推进而不合并；不能提供 NIO view 的 ByteBuf 明确失败。错误/取消在活动 native 回调返回、解析器清理后释放引用。
 
-输入通过 `readableByteBuffers()` 顺序提供组件视图，迭代器保持打开，直到 Provider
-消费完或完成异常/取消清理，然后先关闭迭代器，再通过 `DataBufferUtils.release`
-释放输入。正在执行的原生或自定义绑定回调返回后才会清理，支持池化及
-`CloseableDataBuffer`。不要先关闭迭代器再把其中的 ByteBuffer 交给异步解析。
+write/writeEvents 发出时转移一个引用；send 接管接受的段，其他消费者使用后 release。下游自加异步队列应清理 discard，例如：
 
-`write/writeEvents` 按输出 chunk 预算从工厂分配独立的有界分段；发出的 buffer 由
-下游接管，`response.writeWith(...)` 负责发送后的释放。适配器释放未发布的分段。
-下游另加 `publishOn` 等队列时，在相应操作符之后配置
-`.doOnDiscard(DataBuffer.class, DataBufferUtils::release)`，并负责自己消费的 buffer。
-任意删除 JSON 字节分段会破坏文档完整性。
+```java
+var queued = netty.write(items, output)
+    .publishOn(outputScheduler, 8)
+    .doOnDiscard(io.netty.buffer.ByteBuf.class, io.netty.buffer.ByteBuf::release);
+return outbound.send(queued);
+```
 
-数组、NDJSON、根值序列、Pointer selection 与结构事件使用已有 options。例如复制
-超大复杂文档可组合 `streams.writeEvents(streams.readEvents(request.getBody()), options)`，
-其中 options 使用 `SINGLE_VALUE`。输入 DataBuffer 和输出分段都不是 JSON 文档边界。
-这里避免整块输入复制和中间输出数组，原生 token/POJO 分配及编码缓冲到输出段的复制
-仍然存在，吞吐收益需结合实际负载测量。
+解析之前加队列时须先正确 retain，并将那个引用交给 readOwned；通常在解析后组合异步业务更直接。适配器只释放未发布输出。原生编码缓冲到 ByteBuf 仍有复制，不保证端到端零复制。TCP read/ByteBuf/输出段都不是 JSON 文档边界。
+
+<a id="databuffer"></a>
+## Spring DataBuffer
+
+使用 Spring 模块与显式 Reactor 依赖；以下片段位于已有 request/response 的响应式处理器中：
+
+```java
+var dataBuffers = org.jetlinks.json.spring.DataBufferJsonStreamMapper.of(
+    mapper, response.bufferFactory());
+Flux<Item> items = dataBuffers.read(request.getBody(), Item.class,
+    JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
+return response.writeWith(dataBuffers.write(items,
+    JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY)));
+```
+
+可用 DefaultDataBufferFactory 或宿主的池化工厂，不改变 HTTP codec。read/readEvents 接管一个已交付输入所有权，不额外 retain。输入位置保持不变，组件迭代器在 Provider 借用期间保持打开，清理时先关闭迭代器再释放输入，即使关闭失败也释放。
+
+write/writeEvents 发出的段由下游接管，response.writeWith 负责接受后的释放；适配器释放未发布段。下游自加队列应配置 doOnDiscard(DataBuffer.class, DataBufferUtils::release)，上游负责尚未交付的缓冲。数组、selection 和事件复用相同 options，输入/输出分段不代表整篇文档。
 
 <a id="events"></a>
-## 12. 复杂结构的事件流
+## 复杂文档的结构事件
 
-### 12.1 元数据、流式数组与尾部汇总
-
-以下声明为类内方法。`Flux.defer` 为每次订阅独立计算汇总；没有收集 items：
+在元数据之间流式输出数组，汇总状态按订阅建立：
 
 ```java
 static Flux<byte[]> exportDocument(JsonStreamMapper streams, Flux<Item> items) {
     return Flux.defer(() -> {
-        java.util.concurrent.atomic.AtomicLong count = new java.util.concurrent.atomic.AtomicLong();
-        Flux<JsonEvent> document = Flux.concat(
+        var count = new java.util.concurrent.atomic.AtomicLong();
+        Flux<JsonEvent> events = Flux.concat(
             Flux.just(JsonEvent.START_OBJECT,
-                JsonEvent.name("meta"), JsonEvent.value(Map.of("version", 1)),
+                JsonEvent.name("meta"), JsonEvent.value(java.util.Map.of("version", 1)),
                 JsonEvent.name("items"), JsonEvent.START_ARRAY),
             items.doOnNext(item -> count.incrementAndGet()).map(JsonEvent::value),
             Flux.defer(() -> Flux.just(JsonEvent.END_ARRAY,
-                JsonEvent.name("summary"), JsonEvent.value(Map.of("count", count.get())),
+                JsonEvent.name("summary"), JsonEvent.value(java.util.Map.of("count", count.get())),
                 JsonEvent.END_OBJECT)));
-        return streams.writeEvents(document,
+        return streams.writeEvents(events,
             JsonWriteOptions.of(JsonWriteOptions.Format.SINGLE_VALUE));
     });
 }
 ```
 
-成功输出结构为 `{"meta":{"version":1},"items":[...],"summary":{"count":N}}`。汇总只在 items 正常完成后生成；上游出错会终止，不产生成功尾部。每次订阅状态独立，但输入 `items` 本身是否可重复消费仍由源决定。
-
-### 12.2 完整结构转发
-
-```java
-Flux<byte[]> input = Flux.just(
-    "{\"meta\":{},\"items\":[1,{\"nested\":[true,null]}],\"summary\":{}}"
-        .getBytes(StandardCharsets.UTF_8));
-Flux<JsonEvent> events = streams.readEvents(input);
-Flux<byte[]> copied = streams.writeEvents(events,
-    JsonWriteOptions.of(JsonWriteOptions.Format.SINGLE_VALUE));
-```
-
-ByteBuffer 对应 `readBufferEvents` 和 `writeEventBuffers`。事件读取处理恰好一个完整文档，直接发出所有结构/字段/标量，不收集包围容器。复制保持 JSON 结构和 tokenizer 提供的标量表示，不保留原始空白、转义方式或源文本；两套原生非阻塞 tokenizer 都会把整数 `-0` 规范成 `0`。若业务依赖原始签名文本，应保留原始字节。
-
-### 12.3 事件模型
-
 | 事件 | 用途 |
 | --- | --- |
-| `START_OBJECT/END_OBJECT`、`START_ARRAY/END_ARRAY` | 容器边界，复用不可变常量 |
-| `name(String)` | 对象字段名 |
-| `string(String)`、`number(String)` | 文本标量；数字校验语法，不经过 double |
-| `TRUE/FALSE/NULL` | 直接标量常量 |
-| `value(Object)` | 用 mapper 绑定一个完整 Java 值，可包含 Java null |
-| `token(JsonToken, String)` | 按 token 类型创建事件，容器不带 payload |
+| START_OBJECT/END_OBJECT、START_ARRAY/END_ARRAY | 不可变容器常量 |
+| name / string / number | 字段名、文本、完整数字文本 |
+| TRUE/FALSE/NULL | 直接标量常量 |
+| value(Object) | 配置化绑定一个完整值，可为 Java null |
+| token(JsonToken, String) | 按 token 类型构造 |
 
-`writeEvents` 仅接受 SINGLE_VALUE，校验容器配对、对象字段/值顺序和唯一根值。手动构造事件的无效数字在写入时被拒绝。直接标量事件绕过 Java 标量绑定适配器，`value(...)` 使用正常绑定。
+事件输出仅支持 SINGLE_VALUE，校验容器、字段/值顺序和唯一根。直接标量绕过 Java 标量适配器，value 使用正常绑定和当前值预算。number 校验语法并保持精度，无 raw 注入。
 
-写入按事件排空，后续事件不会越过当前事件；一个 `value(hugePojo)` 仍是完整绑定单位。非常大的对象应拆成 `START_OBJECT`、逐字段事件、`END_OBJECT`；很大的数组应拆成数组边界与逐项事件。单个超长字符串/数字不会被结构事件自动拆开，仍受 token 与当前值预算限制。
+`streams.writeEvents(streams.readEvents(chunks), options)` 可转发整篇结构，ByteBuffer 对应 readBufferEvents/writeEventBuffers；Netty/DataBuffer 使用各自 readEvents/writeEvents。事件不会收集包围容器，但不会拆开单个巨大 POJO/string/number。转发不保留源空白或转义，原生 tokenizer 也会把整数 -0 规范为 0；签名依赖原文时保留原始字节。
 
 <a id="session"></a>
-## 13. 手动增量解析会话
+## 手动增量解析会话
 
-不使用 Reactor 的宿主可以直接驱动 Provider 的 UTF-8 session。下面是类内方法，输入为逐块产生且生命周期稳定的 ByteBuffer，输出由 Consumer 接收；该方法不负责关闭输入来源：
+不引入 Reactor 时由宿主驱动 session，下面声明放在类体中：
 
 ```java
-static <T> void pump(JsonMapper mapper, Iterator<ByteBuffer> chunks, JsonType<T> type,
-                     JsonReadOptions options, Consumer<T> consume) {
+static <T> void pump(JsonMapper mapper, java.util.Iterator<java.nio.ByteBuffer> chunks,
+                     JsonType<T> type, JsonReadOptions options,
+                     java.util.function.Consumer<T> consume) {
     try (JsonReadSession<T> session = mapper.readSession(type, options)) {
         boolean ended = false;
         while (true) {
-            JsonReadSession.Result<T> result = session.read();
+            var result = session.read();
             switch (result.state()) {
-                case VALUE -> consume.accept(result.value()); // 允许 Java null
+                case VALUE -> consume.accept(result.value());
                 case END -> { return; }
                 case NEED_INPUT -> {
                     if (ended || !session.needsInput()) {
@@ -951,218 +498,114 @@ static <T> void pump(JsonMapper mapper, Iterator<ByteBuffer> chunks, JsonType<T>
 }
 ```
 
-调用样例：
+只在 needsInput 时 feed；借用 remaining 区域且不改 cursor，直到下一次 needsInput 或 close 前保持存储有效、不可修改。真实 EOF 调用一次 endInput 后继续读到 END，VALUE(null) 不等于 EOF。异步事件循环在 NEED_INPUT 时等待来源，不忙轮询。
 
-```java
-Iterator<ByteBuffer> chunks = List.of(
-    ByteBuffer.wrap("[1,".getBytes(StandardCharsets.UTF_8)),
-    ByteBuffer.wrap("2]".getBytes(StandardCharsets.UTF_8))).iterator();
-pump(mapper, chunks, JsonType.of(Integer.class),
-    JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS), System.out::println);
-```
-
-只在 `needsInput()` 为 true 时 `feed`。session 借用 buffer 的 remaining 区域，不修改 position/limit/mark；在下次 `needsInput()` 为 true 或 close 前，源内存必须保持有效且内容不变。它与 Reactor `readBuffers` 的立即复制行为不同。
-
-VALUE 可携带 Java null，不能据此判断 EOF。只有真实输入结束才调用一次 `endInput()`，之后继续 `read()` 直到 END，残缺文档会失败。实际事件循环在 NEED_INPUT 时应等待异步来源，不能忙轮询；示例 Iterator 只是演示状态机。
-
-`mapper.eventSession()` 使用同样的 feed/read/endInput/close 协议，输出 `JsonEvent`。`read(BooleanSupplier cancelled)` 可提供线程安全、非阻塞取消谓词；取消可能返回 END 而未校验剩余文档，调用方仍须 close。
+eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程安全非阻塞取消谓词，取消可能直接 END，之后仍须 close。read(receiver, cancelled) 将一个状态/值同步交给自选返回类型的 Receiver，成功时恰好调用一次，允许 VALUE(null)。当前 Providers 直接交付以免每条分配 Result；Receiver 不得阻塞或重入，异常原样传播，失败后关闭操作。
 
 <a id="ownership"></a>
-## 14. 资源、线程与内存所有权
+## 资源、线程与所有权
 
-| 对象 | 生命周期与责任 |
+| 对象 | 责任 |
 | --- | --- |
-| `JsonMapper` / `JsonStreamMapper` | 构建后共享；无 close，不持有每次操作状态 |
-| Builder / 可变树 | 操作局部，不并发修改 |
-| Reader / Writer / Session | 每操作一个，try-with-resources 关闭；释放原生状态，不关闭调用方 I/O |
-| 同步传入的文件/流/Writer | 创建者关闭；阻塞特性由底层 I/O 决定 |
-| Reactor 输入 `byte[]` | 发布后保持内容不变，onNext 返回也不能复用存储 |
-| Reactor 输入 `ByteBuffer` | 在适配器自己的输入 onNext 内立即复制 remaining 区域，该调用返回后可复用源存储 |
-| 手动 session 的 `ByteBuffer` | 借用到下次 needsInput 或 close，期间不能改底层字节 |
-| 输出 `byte[]` / `ByteBuffer` | 库拥有独立存储并转交下游，不再复用；ByteBuffer 只读且 cursor 独立，无 release |
-| Netty 输入 ByteBuf | `read` 借用并 retain；`readOwned` 消费一个转移引用；解析终止后释放适配器拥有的引用 |
-| Netty 输出 ByteBuf | 发出时转移一个引用；下游负责使用后的 release 以及自己队列/过滤的 discard |
-| Spring 输入 DataBuffer | `DataBufferJsonStreamMapper.read/readEvents` 接管一个输入所有权，组件迭代器关闭后释放 |
-| Spring 输出 DataBuffer | 发布后下游接管；`response.writeWith` 或消费方负责释放及自己队列的 discard |
+| Mapper / stream mapper | 构建后共享，无每次操作状态 |
+| Builder / 树 / cursor / session | 不并发修改；cursor/session 按操作关闭 |
+| 调用方同步 IO | 调用方关闭，底层可能阻塞 |
+| 输入 byte[] | 发布后保持不可变，不复用 |
+| 输入 ByteBuffer | 适配器 onNext 内复制；之前的异步队列由宿主保证有效 |
+| 手动 session 的 ByteBuffer | 借用至 needsInput 或 close |
+| 输出 byte[] / ByteBuffer | 独立存储转移下游；ByteBuffer 只读、cursor 独立，无 release |
+| Netty / DataBuffer | 按上文的显式借用或转移契约释放 |
 
-如果在进入 `readBuffers` 前使用 `publishOn` 等异步边界，宿主必须保证队列中的原始内存一直有效到适配器实际收到它；立即复制不能保护尚未到达适配器的字节。直接构造只读 view 也不能隔离可复用的底层内存。
+每次订阅独立创建操作状态，保留 Reactor Context 和上游异常身份，无内部 subscribe/block、强制调度或整流聚合。取消向上传播；活动 native/自定义回调返回后再清理资源。只读 view 不能防止其他持有者改写字节。
 
-发布者懒执行，每次订阅创建独立解析/写入状态，保留 Reactor Context 和上游异常身份。内部没有主动 `subscribe/block`、强制 Scheduler 或整流收集。取消向上游传播，正常完成、错误和取消均释放操作状态；正在运行的自定义绑定回调须返回后才能完成相应清理，不能在其中无限阻塞。
-
-库不会代替宿主释放真实来源、回滚业务副作用或关闭连接。关闭后的包装器会断开曾借用的输入/输出和原生上下文引用；宿主仍应在不再使用时释放自己的引用。不要跨线程共享一个 session，或在 JSON 处理尚未完成时修改待写对象和事件中的 Java 值。
+关闭包装器会断开原生上下文与借用存储引用。库不代替宿主关闭真实连接、回滚副作用或释放宿主额外持有的引用；写入完成前也不得并发修改待写值。
 
 <a id="performance"></a>
-## 15. 大文档与性能实践
-
-### 15.1 分别控制不同预算
+## 大文档与性能实践
 
 | 预算 | 控制方式 |
 | --- | --- |
-| 整篇文档/整个连接累计字节、超时 | 宿主计数、网络/文件策略和 Reactor 超时 |
-| 当前输入 chunk | 上游读取块大小；不要一次发送整篇文件 |
-| 单个字符串/数字与嵌套深度 | `JsonOptions` 原生 token/depth 限制 |
-| 物化记录/绑定值 | mapper 与操作 `maxValueBytes` 的较小值 |
-| 待输出分段 | chunkSize 与当前值预算；段大小不等于总待输出内存 |
-| 下游业务缓存与并发 | concatMap/flatMap 并发、批次、预取和宿主队列 |
-| 开启重复键检测的对象字段集合 | 原生检测器；减少单个巨型对象的字段数或调整输入结构 |
+| 累计字节、超时 | 宿主网络/文件策略 |
+| 输入 chunk | 上游读取块大小 |
+| token / 深度 | JsonOptions 原生限制 |
+| 当前记录 / 绑定值 | mapper 与操作 maxValueBytes 较小值 |
+| 输出段 | chunkSize 加当前值预算 |
+| 业务缓存 / 并发 | 有限并发、批次、预取、队列 |
+| 重复键字段集合 | 避免单个无限字段对象 |
 
-“请求一条”不等于严格的一条 token CPU、固定堆字节数或零预取；解析器可能继续扫描以确定值完整性，链路也可能准备下一个有限记录。单条记录虽有字节预算，反序列化后的 Java 对象开销仍可能更大。
+共享 mapper/JsonType，DTO 直接绑定；根数组和包装数组用记录/selection，大结构用游标/事件。避免 write→String→getBytes、readTree→export→convert 和反复导出整树。已有不可变 byte[] 不必为了池化再包装为 ByteBuf；选择源已有的传输能力。不要用 cache/replay/collectList 把整流重新留在堆中。
 
-### 15.2 减少不必要的物化和分配
+当前热点仍包括短记录响应式写入、token 交付、字符表示转换和树隔离。Native 对照若缺少背压/取消/预算，不可将全部差值解释为可移除成本。Netty 避免整块输入复制和中间输出数组，但小记录耗时未必受益，按真实负载选择 allocator 和段大小。
 
-1. 共享 mapper 与不可变 JsonType，按订阅创建操作状态。
-2. 入站根数组用 ARRAY_ELEMENTS，包装数组用 selection，出站用 ARRAY 或结构事件；不要先生成整树。
-3. 字节消费者直接接收字节/输出流，避免 `write -> String -> getBytes`。
-4. 已知 DTO 直接绑定，避免 `readTree -> toJavaValue -> convert` 的多层中间表示。
-5. 未知大结构用 cursor/events，避免对每个字段导出整棵 Map 快照。
-6. 单条业务值保持有界，源块和输出段从默认 8 KiB 起按真实负载测量；极小分段会增加数组、队列和信号开销。
-7. 保持有限并发，检查业务 `cache/replay/buffer/collectList` 是否把整流重新保存在堆中。
+### 验证与复现
 
-库会复用订阅内的原生 writer 和内部状态，并把完整输出段直接移交下游；公开事件和输出内存必须能够被独立保留，不会循环复用公开可见数组。ByteBuffer 入站复制用于保护生命周期，不能仅为少一次分配就改成共享可复用存储。
+Java 17/21 各 233 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
-### 15.3 复现大输入输出和资源验证
-
-先完成源码构建，再在仓库根目录运行：
+完成源码构建后按需运行；默认大文档矩阵耗时较长：
 
 ```sh
-# 两个 Provider、六种模式、每文档至少 1 GiB，128/256 MiB 堆。
-python3 scripts/run-streaming-stress.py
-
-# 更小输入，覆盖小块和大块边界。
+python3 scripts/run-tree-access-stress.py
 python3 scripts/run-streaming-stress.py --mib 16 --heaps 128 --chunks 64 65536
-
-# 保留关闭后的包装器，检查原堆/直接内存和目标引用是否释放。
+python3 scripts/run-streaming-stress.py
 python3 scripts/run-resource-release-stress.py
-
-# JMH 吞吐、累计分配和 GC 分析。
-python3 scripts/run-streaming-benchmarks.py
-
-# Netty：两种 Provider，heap/direct，每文档至少 1 GiB；128 MiB 堆/32 MiB direct。
 python3 scripts/run-netty-stress.py
 python3 scripts/run-netty-stress.py --release-only
 python3 scripts/run-databuffer-stress.py
 python3 scripts/run-databuffer-stress.py --release-only
+python3 scripts/run-streaming-benchmarks.py
+python3 scripts/run-streaming-benchmarks.py --tree
+python3 scripts/run-streaming-benchmarks.py --provider-read
+python3 scripts/run-streaming-benchmarks.py --published-write
 python3 scripts/run-streaming-benchmarks.py --netty
 ```
 
-六种场景包括根数组读取、NDJSON 读取、包装数组选择、数组写出、NDJSON 写出和复杂文档事件复制。框架按需生成并验证数据，不收集整个文档；输出独立校验结构和尾部元数据。可用 `JSON_STRESS_JAVA` 指定压力测试 JVM。
-
-当前实现已有至少 1 GiB 聚合文档的受限堆验证。它证明这些测试场景的有界处理能力，不保证任意大 POJO、单 token 或所有并发量都使用固定内存。累计分配、GC 后存活堆、各内存池峰值之和和 RSS 是不同指标；微基准吞吐也不等同于生产网络吞吐。具体证据及源码版本见 [验证契约](contracts.md#implementation-and-validation) 与 [PR](https://github.com/jetlinks/json-facade/pull/1)。
-
-### 15.4 Netty 的实测取舍
-
-Java 21 的 JMH 矩阵在相同文档上比较 byte[]、复制 ByteBuffer 和池化 ByteBuf，
-覆盖两个 Provider、heap/direct、20/4096 字符 payload、8 KiB chunk，
-每组两个独立 fork，预热 3 次、测量 4 次，每次 300 ms，使用 GC profiler。
-源数据准备和网络/TLS 不计入计时；小 payload 每操作 1000 条，大 payload 256 条。
-
-| payload | Netty 输入相对复制 ByteBuffer 的堆分配减少 | Netty 输出相对 byte[] 的堆分配减少 |
-| --- | --- | --- |
-| 20 字符 | 约 4% | 约 18% |
-| 4096 字符 | 约 44% | 约 95% |
-
-分配减少不等于耗时同比下降：这组小记录写出平均耗时增加约 50%–74%，部分大记录
-direct 写出也较慢。已拥有不可变 byte[] 的输入本来就不复制，没有必要先包装为
-Netty 来追求同样的收益。适配器更适合已经使用 ByteBuf、记录较大或 GC 压力明显
-的链路；按实际负载选择 allocator，并用上面的脚本复测。这些数值是本地微基准，
-不是端到端网络性能承诺。受限内存验证覆盖 Java 17/21、两种 Provider、heap/direct
-及每文档至少 1 GiB 的数组读写、Pointer selection、复杂结构复制，结束时均要求
-零 pinned bytes；相应运行入口见上一节。
+压力测试按需生成并独立校验结构；JSON_STRESS_JAVA 指定 JVM。JMH 参数可透传，比较时固定配置、输入、所有权与消耗方式，记录 fork、预热、堆和 GC profiler。累计分配、存活堆、池化 reserved/pinned 与 RSS 分别观察，微基准不代替生产网络测试。
 
 <a id="errors"></a>
-## 16. 错误处理与常见问题
+## 错误处理
 
-### 16.1 错误分类
-
-`JsonException.kind()` 提供稳定类别，原生 cause 保留进一步诊断：
-
-| 类别 | 常见原因 |
+| JsonException.kind | 常见来源 |
 | --- | --- |
-| `PROVIDER` | 无匹配引擎、发现歧义或重复 Provider id |
-| `CONFIGURATION` | 重复注册、未知配置名、默认初始化重入、原生类型不匹配、共享配置冲突 |
-| `SYNTAX` | 无效 JSON、残缺输入、错误分帧 |
-| `BINDING` | 无法绑定目标类型或业务适配失败 |
-| `LIMIT` | token、深度或当前值预算超限 |
-| `IO` | 同步底层输入/输出失败 |
+| PROVIDER | 发现缺失/歧义/重复 id |
+| CONFIGURATION | 配置冲突、重复注册、未知名称、初始化重入 |
+| SYNTAX | 无效 JSON、残缺输入、分帧错误 |
+| BINDING | 类型转换或适配失败 |
+| LIMIT | token、深度、当前值预算 |
+| IO | 同步 IO 失败 |
+| VALIDATION | 树默认断言失败 |
 
-```java
-try {
-    mapper.read("{", Item.class);
-} catch (JsonException error) {
-    System.err.println(error.kind() + ": " + error.getMessage());
-    // 将 cause 交给宿主日志；不要记录敏感原文。
-}
-```
+JsonException 保留原始 cause 并可提供结构化位置；当前没有独立中立 JsonLocation。API 参数/状态误用也可能抛 JDK 异常，上游响应式错误原样传播。失败 session 应关闭并从源头建立新操作，不能继续解析。
 
-具体行列和绑定路径可能在原生 cause 中，当前没有中立 `JsonLocation`。参数、树形状或关闭后使用等 API 误用也可能抛 `IllegalArgumentException/IllegalStateException`，不能只捕获 JsonException 就认为覆盖所有编程错误。Reactor 上游错误保留原异常身份；失败后从源头重新创建一次操作才是新的解析会话。
-
-### 16.2 常见问题
-
-**已有 Jackson 配置为何没有生效？** 构建器创建自己的实例，不读取框架中已有的 ObjectMapper Bean。把所需规则明确注册到本 mapper，HTTP codec 仍配置在框架侧。
-
-**为什么 selection 在关闭重复键检测后仍拒绝重复路径？** 已发出的选中值不能撤回。选中路径唯一是流式选择的独立契约，其他字段仍遵循 Provider 配置。
-
-**提高 maxValueBytes 后仍然 8 MiB 失败？** 检查操作 options 是否仍由 `of(...)` 创建，其默认预算独立于 mapper；同时检查 token 长度与深度，它们不是同一限制。
-
-**为什么有背压仍占用很多内存？** 检查源是否一块提供巨大字节数组、单条 POJO 是否过大、业务是否缓存、并发是否失控，以及重复键检测是否面对超多字段的对象。背压是信号需求，不是完整堆预算。
-
-**读到了需要的条目后能证明整篇 JSON 合法吗？** 不能。需要消费到完成，才能发现尾部语法、重复路径或残缺容器错误。
-
-**能跳过坏的 NDJSON 行继续吗？** 当前没有自动跳坏记录模式。需要容错导入时，宿主先建立独立记录边界和每行预算，再逐条使用独立解析操作并记录业务失败；不要在同一个失败 session 上恢复。
-
-**如何输出漂亮的 NDJSON？** 流式输出始终 compact，以保证一行一个值；普通同步输出可配置 pretty。
-
-**为何树工厂拒绝 POJO、对 byte[] 的输出也不同？** 结构工厂只复制 JSON 容器/标量；任意 Java 对象绑定请使用 `toTree`。两者的用途不同，参见 [树转换](#tree)。
-
-**能直接写任意 raw JSON、压缩 JSON 或 CBOR 吗？** 当前没有 raw 注入接口。已有合法片段可先解析成树/事件；压缩放在宿主传输层，CBOR/Smile/XML 使用原生专用集成。
+NDJSON 暂无自动跳坏行模式；容错业务须先建立独立行边界和预算，再逐行独立解析。raw JSON 注入、CBOR/Smile/XML 未提供，压缩由宿主传输层处理。
 
 <a id="migration"></a>
-## 17. Provider 扩展与迁移
+## Provider 扩展与迁移
 
-### 17.1 实现新的 Provider
+JsonProvider 仅有 id/create，实现必须遵守同步、树、游标与非阻塞增量/事件的全部契约。原生引擎负责 tokenizer、绑定与原生生命周期，公共层负责分帧/选择/预算，Reactor 协调 demand/cancel。不要复制 Provider 已提供的解析器、绑定逻辑或原生算法。
 
-`org.jetlinks.json.spi.JsonProvider` 仅包含 `id()` 和 `create(JsonConfiguration)`。实现者需要返回遵守全部公共契约的 JsonMapper，而不是仅替换同步 `read/write`：
+Provider 可以注册 META-INF/services/org.jetlinks.json.spi.JsonProvider，或由应用显式传工厂。测试依赖 json-facade-tck 并继承 JsonMapperContract，实现 mapper(JsonOptions, JsonModule...)；另测原生特有配置。当前只有 Jackson 2/3 实现，不将同步引擎的整流聚合伪装为非阻塞解析。
 
-- 应用 options、中立模块与类型化原生配置；不支持的配置明确失败。
-- 实现类型绑定、树兼容、借用游标和非阻塞增量读取/事件会话。
-- 原生引擎负责 JSON token 解析、绑定和重复键检测，公共层负责分帧、选择和资源协调。
-- 遵守 UTF-8、记录预算、EOF、取消、关闭和调用方 I/O 所有权规则。
-- 在 `META-INF/services/org.jetlinks.json.spi.JsonProvider` 注册工厂全限定名，或让应用显式传工厂。
-- 以测试依赖引入 `json-facade-tck`，继承 `org.jetlinks.json.tck.JsonMapperContract`，实现其 `mapper(JsonOptions, JsonModule...)`，在真实引擎上执行共享契约测试；另测 Provider 特有配置。
-
-当前没有可选增量能力开关，只有同步 Reader 的引擎不能靠整流收集伪装成非阻塞 Provider。当前交付的实现是 Jackson 2/3，未提供 Gson/Fastjson Provider。
-
-### 17.2 从原生 API 或另一 Provider 迁移
-
-业务 DTO、JsonType、JsonValue、中立模块和流模式可以保留；原生注解、mixin、模块、日期/枚举/Map 键、多态和专有类型需要显式迁移。建议按业务边界替换主动 JSON 调用，在真实样本上对比字段、null、精度、日期和错误行为，再切换引擎。
-
-不要将原生 JsonNode/ObjectNode 或特定 Provider 类放入新的业务公共接口。已有公开类型不能只改 import 就视为兼容；框架配置与业务门面配置也应分别验证。
+迁移保留中立 DTO/JsonType/JsonValue/模块，逐项验证原生注解、mixin、日期、枚举、Map 键、多态、null、精度与异常。框架 HTTP 配置与业务主动 JSON 操作分别验证，原生树类型不应进入新的业务公共接口。
 
 <a id="reference"></a>
-## 18. API 索引与验证入口
+## API 索引
 
-下表列出当前公开入口，便于查找准确签名：
-
-| API | 用途与关键重载 |
+| API | 入口 |
 | --- | --- |
-| [Json](../json-facade-api/src/main/java/org/jetlinks/json/Json.java) | `builder`、`global()`、`global(String)`、`registerGlobal(JsonMapper)`、`registerGlobal(String, JsonMapper)`、`registerGlobalFactory`、`defaultMapper` |
-| [JsonMapperBuilder](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapperBuilder.java) | `provider(String/JsonProvider)`、`classLoader`、`options`、`module`、`configureNative`、`build` |
-| [JsonMapper](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapper.java) | `write(Object)`、`writeBytes`、`write(Object, OutputStream/Writer)`、`writeCompact(Object, OutputStream)`；`read(String/byte[], Class/JsonType)`、`read(InputStream/Reader, JsonType)`；`convert(Object, JsonType)`；`readTree(String)`、`toTree(Object)`；工厂、游标和会话 |
-| [JsonType](../json-facade-api/src/main/java/org/jetlinks/json/JsonType.java) | 匿名泛型捕获、`of(Class/Type)`、`listOf`、`mapOf`、`type` |
-| [JsonOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonOptions.java) | 不可变共享策略与 token/记录限制 |
-| [JsonValue](../json-facade-api/src/main/java/org/jetlinks/json/JsonValue.java) | NULL/MISSING、`get/getObject/getArray/at`、`as(Class/JsonType)` 与标量快捷方法、`requirePresent/requireNonNull/require`、`pointer/displayPath`、`size/toJavaValue/deepCopy`；JsonObject/JsonArray 增加对应修改操作 |
-| [JsonPointer](../json-facade-api/src/main/java/org/jetlinks/json/JsonPointer.java) | RFC 6901 `of` 和解码后的 `segments` |
-| [JsonReader](../json-facade-api/src/main/java/org/jetlinks/json/JsonReader.java) / [JsonWriter](../json-facade-api/src/main/java/org/jetlinks/json/JsonWriter.java) | 同步 token 游标，调用方负责关闭 |
-| [JsonReadSession](../json-facade-api/src/main/java/org/jetlinks/json/JsonReadSession.java) | `needsInput/feed/read/endInput/close`，带状态结果 |
-| [JsonReadOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonReadOptions.java) / [JsonWriteOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonWriteOptions.java) | 每操作分帧、选择、null 和记录/分段预算 |
-| [JsonEvent](../json-facade-api/src/main/java/org/jetlinks/json/JsonEvent.java) | 不可变结构事件和有界 Java 值 |
-| [JsonStreamMapper](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/JsonStreamMapper.java) | 字节/ByteBuffer 读写和结构事件；`readChunks/readChunkEvents/writeChunks/writeEventChunks` 用于 transport SPI |
-| [NettyJsonStreamMapper](../json-facade-netty/src/main/java/org/jetlinks/json/netty/NettyJsonStreamMapper.java) | `of(mapper, allocator)`；`read/readOwned/readEvents/readOwnedEvents`；`write/writeEvents` |
-| [DataBufferJsonStreamMapper](../json-facade-spring/src/main/java/org/jetlinks/json/spring/DataBufferJsonStreamMapper.java) | `of(mapper, factory)`；输入接管的 `read/readEvents`；输出转移的 `write/writeEvents` |
-| [Reactor transport SPI](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/spi) | `JsonInputChunk` 输入租约、`JsonBufferAllocator<B>` 输出分配与转移 |
-| [SPI 包](../json-facade-api/src/main/java/org/jetlinks/json/spi) | `JsonProvider`、`JsonConfiguration`、`JsonModule`、`JsonModuleContext`、`JsonAdapter`、`JsonNativeConfiguration` |
-| [JsonException](../json-facade-api/src/main/java/org/jetlinks/json/JsonException.java) / [JsonFailure](../json-facade-api/src/main/java/org/jetlinks/json/JsonFailure.java) | 统一类别、原因、结构化位置和原生 cause；断言异常工厂共享相同错误上下文 |
-| [Jackson2Provider](../json-facade-jackson2/src/main/java/org/jetlinks/json/jackson2/Jackson2Provider.java) | `adapt(ObjectMapper)`、`adapt(ObjectMapper, int)`：宿主原生配置快照 |
-| [JsonFacadeConfiguration](../json-facade-spring/src/main/java/org/jetlinks/json/spring/JsonFacadeConfiguration.java) | 普通 Spring 的显式配置导入；Boot 通过同模块的 AutoConfiguration 接入 |
-
-源码工程的标准质量验证为 `mvn -B -ntp verify`，包含两套真实引擎 TCK、Reactor 契约、Netty 引用计数与 TCP 集成、编译告警门禁、Checkstyle、SpotBugs 和每生产模块至少 80% 分支覆盖率；CI 在 Java 17/21 上运行。手册中业务方法返回 Publisher/Mono，由宿主统一订阅；测试或独立 main 可以在终端边界等待结果，不应把这种等待复制到响应式业务链中。
+| [Json](../json-facade-api/src/main/java/org/jetlinks/json/Json.java) | builder、global、命名注册、工厂注册 |
+| [JsonMapperBuilder](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapperBuilder.java) | Provider、options、module、configureNative |
+| [JsonMapper](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapper.java) | read/convert 的 Class/JsonType、write、树工厂、游标/会话 |
+| [JsonType](../json-facade-api/src/main/java/org/jetlinks/json/JsonType.java) | of、listOf、mapOf、泛型捕获 |
+| [JsonOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonOptions.java) | 共享配置与 withX |
+| [JsonValue](../json-facade-api/src/main/java/org/jetlinks/json/JsonValue.java) | 树访问、转换、断言、位置、复制 |
+| [JsonPointer](../json-facade-api/src/main/java/org/jetlinks/json/JsonPointer.java) | RFC 6901 路径 |
+| [JsonReader](../json-facade-api/src/main/java/org/jetlinks/json/JsonReader.java) / [JsonWriter](../json-facade-api/src/main/java/org/jetlinks/json/JsonWriter.java) | 同步游标 |
+| [JsonReadSession](../json-facade-api/src/main/java/org/jetlinks/json/JsonReadSession.java) | feed/read/endInput/close、Receiver |
+| [JsonReadOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonReadOptions.java) / [JsonWriteOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonWriteOptions.java) | 分帧、选择、null、预算 |
+| [JsonEvent](../json-facade-api/src/main/java/org/jetlinks/json/JsonEvent.java) | 结构 token / 有界值 |
+| [JsonStreamMapper](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/JsonStreamMapper.java) | byte[] / ByteBuffer / transport SPI 流 |
+| [NettyJsonStreamMapper](../json-facade-netty/src/main/java/org/jetlinks/json/netty/NettyJsonStreamMapper.java) | ByteBuf 借用/接管、输出 |
+| [DataBufferJsonStreamMapper](../json-facade-spring/src/main/java/org/jetlinks/json/spring/DataBufferJsonStreamMapper.java) | DataBuffer 接管与输出 |
+| [Transport SPI](../json-facade-reactor/src/main/java/org/jetlinks/json/reactor/spi) | 输入租约、输出分配器 |
+| [Provider SPI](../json-facade-api/src/main/java/org/jetlinks/json/spi) | 引擎、模块、适配器 |
+| [公共契约](contracts.md) / [CI](../.github/workflows/verify.yml) | 完整行为、验证与门禁 |

@@ -25,6 +25,7 @@ import org.jetlinks.json.JsonType;
 import org.jetlinks.json.JsonValue;
 import org.jetlinks.json.JsonWriteOptions;
 import org.jetlinks.json.JsonWriter;
+import org.jetlinks.json.reactor.spi.JsonInputChunk;
 import org.jetlinks.json.jackson2.Jackson2Provider;
 import org.jetlinks.json.jackson3.Jackson3Provider;
 import org.jetlinks.json.spi.JsonProvider;
@@ -104,7 +105,7 @@ class JsonStreamMapperTest {
             return Flux.just(bytes("[1,2,"), bytes("3,4]")).doOnRequest(n -> requested.incrementAndGet())
                     .doOnCancel(() -> cancelled.set(true));
         });
-        StepVerifier.create(stream(provider).readBytes(input, JsonType.of(Integer.class),
+        StepVerifier.create(stream(provider).readBytes(input, Integer.class,
                         JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS)).contextWrite(c -> c.put("request", "trace")), 0)
                 .then(() -> assertEquals(0, requested.get()))
                 .thenRequest(1).expectNext(1)
@@ -112,6 +113,34 @@ class JsonStreamMapperTest {
                 .thenCancel().verify();
         assertTrue(cancelled.get());
         assertEquals(1, requested.get());
+    }
+
+    @ParameterizedTest
+    @MethodSource("providers")
+    void classChunkReadsReleaseTransferredInputAfterDemandAndCancellation(JsonProvider provider) {
+        AtomicInteger closed = new AtomicInteger();
+        JsonInputChunk input = new JsonInputChunk() {
+            private ByteBuffer buffer = ByteBuffer.wrap(bytes("[1,2,3]"));
+
+            @Override
+            public ByteBuffer nextBuffer() {
+                ByteBuffer next = buffer;
+                buffer = null;
+                return next;
+            }
+
+            @Override
+            public void close() {
+                closed.incrementAndGet();
+            }
+        };
+        StepVerifier.create(stream(provider).readChunks(Flux.just(input), Integer.class,
+                JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS)), 0)
+                .then(() -> assertEquals(0, closed.get()))
+                .thenRequest(1).expectNext(1)
+                .then(() -> assertEquals(0, closed.get()))
+                .thenCancel().verify();
+        assertEquals(1, closed.get());
     }
 
     @ParameterizedTest
@@ -251,7 +280,7 @@ class JsonStreamMapperTest {
                 }
                 sink.complete();
             });
-            StepVerifier.create(stream(provider).readBuffers(chunks, JsonType.of(Integer.class),
+            StepVerifier.create(stream(provider).readBuffers(chunks, Integer.class,
                             JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS)), 1)
                     .expectNext(1).thenRequest(2).expectNext(2).verifyComplete();
             assertEquals(position, input.position());

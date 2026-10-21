@@ -33,11 +33,22 @@ public class JsonPath {
         return new JsonPath(this, null, position);
     }
 
+    /** Retain immutable Pointer segments and owned index markers, never intermediate tree views. */
+    JsonPath select(List<String> segments, boolean[] indices) {
+        return new SelectedPath(this, segments, indices);
+    }
+
     public JsonPointer pointer() {
         List<String> segments = new ArrayList<>();
         JsonPath path = this;
         for (; path.parent != null; path = path.parent) {
-            segments.add(path.segment == null ? Integer.toString(path.position) : path.segment);
+            if (path instanceof SelectedPath selected) {
+                for (int i = selected.segments.size() - 1; i >= 0; i--) {
+                    segments.add(selected.segments.get(i));
+                }
+            } else {
+                segments.add(path.segment == null ? Integer.toString(path.position) : path.segment);
+            }
         }
         Collections.reverse(segments);
         if (path instanceof LocatedRoot root) {
@@ -75,10 +86,36 @@ public class JsonPath {
         }
     }
 
+    /** One fused access range; markers distinguish numeric object keys from array indices. */
+    private static final class SelectedPath extends JsonPath {
+        private final List<String> segments;
+        private final boolean[] indices;
+
+        SelectedPath(JsonPath prefix, List<String> segments, boolean[] indices) {
+            super(prefix, null, 0);
+            this.segments = segments;
+            this.indices = indices;
+        }
+    }
+
     private void appendTo(StringBuilder result) {
-        if (segment == null) {
+        if (this instanceof SelectedPath selected) {
+            for (int i = 0; i < selected.segments.size(); i++) {
+                if (selected.indices != null && selected.indices[i]) {
+                    result.append('[').append(selected.segments.get(i)).append(']');
+                } else {
+                    appendField(result, selected.segments.get(i));
+                }
+            }
+        } else if (segment == null) {
             result.append('[').append(position).append(']');
-        } else if (identifier(segment)) {
+        } else {
+            appendField(result, segment);
+        }
+    }
+
+    private static void appendField(StringBuilder result, String segment) {
+        if (identifier(segment)) {
             if (!result.isEmpty()) {
                 result.append('.');
             }

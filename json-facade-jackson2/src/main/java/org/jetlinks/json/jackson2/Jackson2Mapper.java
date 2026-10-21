@@ -36,6 +36,7 @@ final class Jackson2Mapper implements JsonMapper {
 
     @Override
     public void write(Object value, OutputStream output) {
+        // Default byte output uses this path: native writeValueAsBytes drops raw serializer IO causes.
         java.util.Objects.requireNonNull(output, "output");
         Jackson2Support.call(() -> {
             mapper.writeValue(output, unwrap(value));

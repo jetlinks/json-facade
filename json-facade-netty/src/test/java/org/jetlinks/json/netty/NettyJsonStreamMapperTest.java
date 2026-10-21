@@ -63,7 +63,7 @@ class NettyJsonStreamMapperTest {
             sink.complete();
         });
         NettyJsonStreamMapper streams = NettyJsonStreamMapper.of(mapper(provider), UnpooledByteBufAllocator.DEFAULT);
-        StepVerifier.create(streams.read(source, JsonType.of(Integer.class),
+        StepVerifier.create(streams.read(source, Integer.class,
                         JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS)), 0)
                 .then(() -> assertEquals(0, delivered.get()))
                 .thenRequest(1).expectNext(1)
@@ -96,7 +96,7 @@ class NettyJsonStreamMapperTest {
         for (byte value : encoded) {
             composite.addComponent(true, Unpooled.wrappedBuffer(new byte[]{value}));
         }
-        StepVerifier.create(streams.readOwned(Flux.just(composite), JsonType.of(String.class),
+        StepVerifier.create(streams.readOwned(Flux.just(composite), String.class,
                         JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS)))
                 .expectNext("中😀", "x").verifyComplete();
         assertEquals(0, composite.refCnt());

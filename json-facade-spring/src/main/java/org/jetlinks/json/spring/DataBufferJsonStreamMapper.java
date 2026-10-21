@@ -48,6 +48,11 @@ public final class DataBufferJsonStreamMapper {
         return streams.readChunks(chunks(input), type, options);
     }
 
+    /** Class counterpart of read, consuming one transferred input ownership per delivered buffer. */
+    public <T> Flux<T> read(Publisher<? extends DataBuffer> input, Class<T> type, JsonReadOptions options) {
+        return read(input, JsonType.of(type), options);
+    }
+
     /** Stream a document's immutable structural events with the input ownership of read(). */
     public Flux<JsonEvent> readEvents(Publisher<? extends DataBuffer> input) {
         return streams.readChunkEvents(chunks(input));

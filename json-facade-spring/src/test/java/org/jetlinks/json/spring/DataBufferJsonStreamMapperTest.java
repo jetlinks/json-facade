@@ -61,7 +61,7 @@ class DataBufferJsonStreamMapperTest {
         DataBufferJsonStreamMapper streams = DataBufferJsonStreamMapper.of(mapper(provider),
                 DefaultDataBufferFactory.sharedInstance);
         StepVerifier.create(streams.read(Flux.just(input).doOnNext(buffer -> delivered.incrementAndGet()),
-                JsonType.of(Integer.class), JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS)), 0)
+                Integer.class, JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS)), 0)
                 .then(() -> assertEquals(0, delivered.get()))
                 .thenRequest(1).expectNext(1)
                 .then(() -> {

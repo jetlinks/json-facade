@@ -11,9 +11,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import org.jetlinks.json.JsonReadOptions;
 import org.jetlinks.json.JsonReadSession;
+import org.jetlinks.json.reactor.spi.JsonInputChunk;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import reactor.core.publisher.Flux;
+import reactor.test.StepVerifier;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -28,7 +31,7 @@ class ReadSessionResourceTest {
         resource.close();
         resource.feed(ByteBuffer.allocate(0));
         resource.endInput();
-        assertEquals(JsonReadSession.State.END, resource.read().state());
+        StepVerifier.create(drain(resource)).verifyComplete();
         assertTrue(resource.cancelled());
         assertEquals(1, session.closed.get());
         assertEquals(1, session.entered.getCount());
@@ -66,12 +69,78 @@ class ReadSessionResourceTest {
     private static void invoke(ReadSessionResource<Integer> resource, Operation operation) {
         switch (operation) {
             case FEED -> resource.feed(ByteBuffer.allocate(0));
-            case READ -> resource.read();
+            case READ -> StepVerifier.create(drain(resource)).verifyComplete();
             case END_INPUT -> resource.endInput();
         }
     }
 
+    @Test
+    void directDeliveryReleasesParserOwnershipBeforeDownstreamReentryAndCancellation() {
+        DirectSession session = new DirectSession();
+        ReadSessionResource<Integer> resource = new ReadSessionResource<>(session, JsonReadOptions.NullPolicy.FAIL);
+        StepVerifier.create(drain(resource).doOnNext(value -> {
+            resource.feed(ByteBuffer.allocate(0));
+            resource.close();
+        }).take(1)).expectNext(1).verifyComplete();
+        resource.close();
+        assertEquals(1, session.closed);
+    }
+
+    private static Flux<Integer> drain(ReadSessionResource<Integer> resource) {
+        return resource.decodeChunk(new JsonInputChunk() {
+            @Override
+            public ByteBuffer nextBuffer() {
+                return null;
+            }
+
+            @Override
+            public void close() {
+            }
+        });
+    }
+
     private enum Operation { FEED, READ, END_INPUT }
+
+    /** Requires the generic entry point and detects any signal sent inside a parser operation. */
+    private static final class DirectSession implements JsonReadSession<Integer> {
+        private boolean active;
+        private int closed;
+
+        @Override
+        public boolean needsInput() {
+            return true;
+        }
+
+        @Override
+        public void feed(ByteBuffer input) {
+            assertFalse(active);
+        }
+
+        @Override
+        public Result<Integer> read() {
+            throw new AssertionError("The reactive path must use generic delivery");
+        }
+
+        @Override
+        public <R> R read(Receiver<? super Integer, R> receiver, BooleanSupplier cancelled) {
+            active = true;
+            try {
+                return receiver.receive(State.VALUE, 1);
+            } finally {
+                active = false;
+            }
+        }
+
+        @Override
+        public void endInput() {
+        }
+
+        @Override
+        public void close() {
+            assertFalse(active);
+            closed++;
+        }
+    }
 
     /** Tests only resource ownership; real parser/binding cancellation is covered by stream tests. */
     private static final class GatedSession implements JsonReadSession<Integer> {

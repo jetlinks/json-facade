@@ -28,10 +28,22 @@ public interface JsonMapper {
     void write(Object value, Writer output);
     /** Read exactly one complete value and reject trailing content. Does not close input. */
     <T> T read(InputStream input, JsonType<T> type);
+    /** Class counterpart of read(InputStream, JsonType); caller retains input ownership. */
+    default <T> T read(InputStream input, Class<T> type) {
+        return read(input, JsonType.of(type));
+    }
     /** Character-input counterpart of read(InputStream, JsonType). */
     <T> T read(Reader input, JsonType<T> type);
+    /** Class counterpart of read(Reader, JsonType); caller retains input ownership. */
+    default <T> T read(Reader input, Class<T> type) {
+        return read(input, JsonType.of(type));
+    }
     /** Bind through JSON data semantics; does not preserve source object identity. */
     <T> T convert(Object value, JsonType<T> type);
+    /** Class counterpart of convert(Object, JsonType), with the same configured binding semantics. */
+    default <T> T convert(Object value, Class<T> type) {
+        return convert(value, JsonType.of(type));
+    }
     /** Create a cursor at the start of a caller-owned source. */
     JsonReader reader(InputStream input);
     /** Create a token writer over a caller-owned target. */
@@ -48,6 +60,10 @@ public interface JsonMapper {
     JsonReadSession<JsonEvent> eventSession();
     /** Create an independent, nonblocking UTF-8 parser session; options are fixed for its life. */
     <T> JsonReadSession<T> readSession(JsonType<T> type, JsonReadOptions options);
+    /** Class counterpart of readSession(JsonType, JsonReadOptions); state remains operation-local. */
+    default <T> JsonReadSession<T> readSession(Class<T> type, JsonReadOptions options) {
+        return readSession(JsonType.of(type), options);
+    }
 
     /** New mutable object; providers may choose their storage implementation. */
     default JsonObject createObject() {

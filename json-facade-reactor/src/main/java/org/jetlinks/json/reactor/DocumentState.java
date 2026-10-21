@@ -12,7 +12,7 @@ import org.jetlinks.json.JsonWriter;
 final class DocumentState {
     private final JsonOptions options;
     private final Deque<Frame> stack = new ArrayDeque<>();
-    private int roots;
+    private boolean rootWritten;
 
     DocumentState(JsonOptions options) {
         this.options = options;
@@ -28,10 +28,10 @@ final class DocumentState {
                 return 0;
             }
             if (token.token() == JsonToken.FIELD_NAME) {
-                return parent.values == 0 ? 0 : 1;
+                return parent.hasValues ? 1 : 0;
             }
         }
-        return parent.array ? (parent.values == 0 ? 0 : 1) : 1;
+        return parent.array ? (parent.hasValues ? 1 : 0) : 1;
     }
 
     void write(JsonEvent event, JsonWriter writer) {
@@ -109,10 +109,10 @@ final class DocumentState {
     private void valueStarted() {
         Frame parent = stack.peek();
         if (parent == null) {
-            if (roots != 0) {
+            if (rootWritten) {
                 throw error("Trailing root value");
             }
-            roots++;
+            rootWritten = true;
         } else if (!parent.array) {
             if (parent.expectingName) {
                 throw error("Expected a JSON field name");
@@ -120,12 +120,12 @@ final class DocumentState {
             parent.expectingName = true;
         }
         if (parent != null) {
-            parent.values++;
+            parent.hasValues = true;
         }
     }
 
     void finish() {
-        if (roots != 1 || !stack.isEmpty()) {
+        if (!rootWritten || !stack.isEmpty()) {
             throw error("Incomplete JSON document");
         }
     }
@@ -137,7 +137,7 @@ final class DocumentState {
     private static final class Frame {
         private final boolean array;
         private boolean expectingName = true;
-        private long values;
+        private boolean hasValues;
 
         Frame(boolean array) {
             this.array = array;

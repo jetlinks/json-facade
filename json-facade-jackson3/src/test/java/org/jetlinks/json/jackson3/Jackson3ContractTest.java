@@ -1,5 +1,7 @@
 package org.jetlinks.json.jackson3;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -69,6 +71,64 @@ class Jackson3ContractTest extends JsonMapperContract {
         assertEquals("\"native:v\"", Json.global().write(new NativeValue("v")));
         assertEquals("{\"native_name\":\"n\"}", Json.global("native-fixture").write(new Name("n")));
         assertEquals(3, Json.defaultMapper().read("3", Integer.class));
+    }
+
+    @Test
+    void byteAndStringConvenienceOutputsRetainSerializerIoFailures() {
+        IOException failure = new IOException("serializer IO");
+        tools.jackson.core.exc.JacksonIOException nativeFailure = tools.jackson.core.exc.JacksonIOException.construct(failure);
+        SimpleModule module = new SimpleModule("serializer-io");
+        module.addSerializer(NativeValue.class, new ValueSerializer<>() {
+            @Override
+            public void serialize(NativeValue value, JsonGenerator output, SerializationContext context) {
+                throw nativeFailure;
+            }
+        });
+        JsonMapper json = Json.builder().provider(new Jackson3Provider())
+                .configureNative(tools.jackson.databind.json.JsonMapper.Builder.class,
+                        builder -> builder.addModule(module)).build();
+        NativeValue value = new NativeValue("x");
+        List<JsonException> errors = List.of(
+                assertThrows(JsonException.class, () -> json.write(value, new ByteArrayOutputStream())),
+                assertThrows(JsonException.class, () -> json.writeBytes(value)),
+                assertThrows(JsonException.class, () -> json.write(value)));
+        for (JsonException error : errors) {
+            assertEquals(JsonException.Kind.IO, error.kind());
+            assertSame(failure, error.getCause().getCause());
+        }
+    }
+
+    @Test
+    void convenienceInputsRetainDeserializerIoFailuresAndCloseParsers() {
+        IOException failure = new IOException("deserializer IO");
+        var nativeFailure = tools.jackson.core.exc.JacksonIOException.construct(failure);
+        List<tools.jackson.core.JsonParser> parsers = new ArrayList<>();
+        SimpleModule module = new SimpleModule("deserializer-io");
+        module.addDeserializer(NativeValue.class, new tools.jackson.databind.ValueDeserializer<>() {
+            @Override
+            public NativeValue deserialize(tools.jackson.core.JsonParser input,
+                    tools.jackson.databind.DeserializationContext context) {
+                parsers.add(input);
+                throw nativeFailure;
+            }
+        });
+        JsonMapper json = Json.builder().provider(new Jackson3Provider())
+                .configureNative(tools.jackson.databind.json.JsonMapper.Builder.class,
+                        builder -> builder.addModule(module)).build();
+        byte[] bytes = "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        List<JsonException> errors = List.of(
+                assertThrows(JsonException.class, () -> json.read(new java.io.ByteArrayInputStream(bytes),
+                        org.jetlinks.json.JsonType.of(NativeValue.class))),
+                assertThrows(JsonException.class, () -> json.read(new java.io.StringReader("{}"),
+                        org.jetlinks.json.JsonType.of(NativeValue.class))),
+                assertThrows(JsonException.class, () -> json.read(bytes, NativeValue.class)),
+                assertThrows(JsonException.class, () -> json.read("{}", NativeValue.class)));
+        for (JsonException error : errors) {
+            assertEquals(JsonException.Kind.IO, error.kind());
+            assertSame(failure, error.getCause().getCause());
+        }
+        assertEquals(4, parsers.size());
+        parsers.forEach(parser -> assertTrue(parser.isClosed()));
     }
 
     @Test

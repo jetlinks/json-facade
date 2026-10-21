@@ -18,7 +18,7 @@ final class WriteSessionResource<B> extends OperationResource {
     // Only one concatMap inner subscribes at a time; queued bytes stay in the owned output.
     // Disable generator fusion so cancellation cannot strand a polled transport reference.
     private final Flux<OutputSegment<B>> drain = Flux.<OutputSegment<B>>generate(this::emit).hide();
-    private long records;
+    private boolean recordWritten;
 
     WriteSessionResource(JsonMapper mapper, JsonWriteOptions options, boolean events, JsonBufferAllocator<B> allocator) {
         format = options.format();
@@ -46,10 +46,10 @@ final class WriteSessionResource<B> extends OperationResource {
     Flux<OutputSegment<B>> encode(Object value) {
         if (acquire()) {
             try {
-                if (format == JsonWriteOptions.Format.SINGLE_VALUE && records != 0) {
+                if (format == JsonWriteOptions.Format.SINGLE_VALUE && recordWritten) {
                     throw new JsonException(JsonException.Kind.SYNTAX, "Trailing root value");
                 }
-                int framing = format == JsonWriteOptions.Format.ARRAY ? (records == 0 ? 0 : 1) : 0;
+                int framing = format == JsonWriteOptions.Format.ARRAY ? (recordWritten ? 1 : 0) : 0;
                 boolean delimited = format == JsonWriteOptions.Format.NDJSON
                         || format == JsonWriteOptions.Format.ROOT_VALUES;
                 output.beginUnit(framing, delimited ? 1 : 0);
@@ -61,7 +61,7 @@ final class WriteSessionResource<B> extends OperationResource {
                     output.write('\n');
                 }
                 output.seal();
-                records++;
+                recordWritten = true;
             } finally {
                 release();
             }
@@ -90,7 +90,7 @@ final class WriteSessionResource<B> extends OperationResource {
                     document.finish();
                 } else if (format == JsonWriteOptions.Format.ARRAY) {
                     writer.endArray();
-                } else if (format == JsonWriteOptions.Format.SINGLE_VALUE && records != 1) {
+                } else if (format == JsonWriteOptions.Format.SINGLE_VALUE && !recordWritten) {
                     throw new JsonException(JsonException.Kind.SYNTAX, "Empty JSON document");
                 }
                 flush();

@@ -2,7 +2,10 @@ package org.jetlinks.json.reactor;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
-/** Serial operation ownership. Cancellation never waits for a native/user callback to return. */
+/** Serial operation ownership. Cancellation never waits for a native/user callback to return.
+ * IDLE -> ACTIVE -> IDLE brackets an operation; IDLE -> CLOSED releases immediately.
+ * ACTIVE -> CLOSE_PENDING (ACTIVE | CLOSED) -> CLOSED leaves cleanup to the active owner.
+ */
 abstract class OperationResource implements AutoCloseable {
     private static final int IDLE = 0;
     private static final int ACTIVE = 1;
@@ -35,6 +38,7 @@ abstract class OperationResource implements AutoCloseable {
 
     @Override
     public final void close() {
+        // Setting the CLOSED bit preserves ACTIVE until its owner returns and releases resources.
         if (state.getAndUpdate(current -> current | CLOSED) == IDLE) {
             closeOwned();
         }

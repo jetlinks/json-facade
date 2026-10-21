@@ -37,6 +37,26 @@ class SegmentedJsonOutputTest {
     }
 
     @Test
+    void rejectedWritesPreserveTheRemainingBudgetAndEachUnitResetsIt() {
+        var output = new SegmentedJsonOutput<>(8, 3, () -> false, ByteArrayAllocator.INSTANCE);
+        for (int unit = 0; unit < 2; unit++) {
+            output.beginUnit(0);
+            output.write('a');
+            assertThrows(JsonException.class, () -> output.write(new byte[]{1, 2, 3}, 0, 3));
+            output.write(new byte[]{'b', 'c'}, 0, 2);
+            assertThrows(JsonException.class, () -> output.write('!'));
+            output.seal();
+            assertArrayEquals(new byte[]{'a'}, output.poll().take());
+            assertArrayEquals(new byte[]{'b', 'c'}, output.poll().take());
+            assertNull(output.poll());
+        }
+        var largeBudget = new SegmentedJsonOutput<>(1, Integer.MAX_VALUE, () -> false, ByteArrayAllocator.INSTANCE);
+        largeBudget.beginUnit(1);
+        largeBudget.write('x');
+        assertArrayEquals(new byte[]{'x'}, largeBudget.poll().take());
+    }
+
+    @Test
     void cancellationDiscardsPendingAndFutureWritesWithoutRetainingBuffers() {
         java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
         var output = new SegmentedJsonOutput<>(1, 1, cancelled::get, ByteArrayAllocator.INSTANCE);
@@ -47,7 +67,14 @@ class SegmentedJsonOutputTest {
         output.write(new byte[]{1, 2}, 0, 2);
         output.seal();
         assertNull(output.poll());
-        assertThrows(IndexOutOfBoundsException.class, () -> output.write(new byte[0], 0, 1));
         assertTrue(cancelled.get());
+        cancelled.set(false);
+        output.beginUnit(0);
+        output.write('c');
+        output.write(new byte[]{1, 2}, 0, 2);
+        output.discard();
+        output.seal();
+        assertNull(output.poll());
+        assertThrows(IndexOutOfBoundsException.class, () -> output.write(new byte[0], 0, 1));
     }
 }

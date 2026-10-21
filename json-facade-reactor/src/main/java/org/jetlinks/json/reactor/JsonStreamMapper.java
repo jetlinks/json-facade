@@ -27,11 +27,21 @@ public interface JsonStreamMapper {
      */
     <T> Flux<T> readBytes(Publisher<byte[]> input, JsonType<T> type, JsonReadOptions options);
 
+    /** Class counterpart of readBytes; type wrapping happens once, before subscription. */
+    default <T> Flux<T> readBytes(Publisher<byte[]> input, Class<T> type, JsonReadOptions options) {
+        return readBytes(input, JsonType.of(type), options);
+    }
+
     /** Read the remaining bytes of any ByteBuffer kind, preserving its position/limit/mark.
      * Copies in the input subscriber's onNext before queuing; the source may then reuse its storage.
      * No retain/release ownership is inferred from ByteBuffer.
      */
     <T> Flux<T> readBuffers(Publisher<? extends ByteBuffer> input, JsonType<T> type, JsonReadOptions options);
+
+    /** Class counterpart of readBuffers, retaining immediate-copy input ownership. */
+    default <T> Flux<T> readBuffers(Publisher<? extends ByteBuffer> input, Class<T> type, JsonReadOptions options) {
+        return readBuffers(input, JsonType.of(type), options);
+    }
 
     /** Stream immutable tokens of exactly one document, retaining all structural fields.
      * Containers are never accumulated. Complete tokens remain subject to mapper limits.
@@ -46,6 +56,11 @@ public interface JsonStreamMapper {
      * leases and its queues; bytes must stay stable until close. No source retain/release is inferred.
      */
     <T> Flux<T> readChunks(Publisher<? extends JsonInputChunk> input, JsonType<T> type, JsonReadOptions options);
+
+    /** Class counterpart of readChunks, retaining transferred-lease input ownership. */
+    default <T> Flux<T> readChunks(Publisher<? extends JsonInputChunk> input, Class<T> type, JsonReadOptions options) {
+        return readChunks(input, JsonType.of(type), options);
+    }
 
     /** Structural input with the same transferred-lease ownership as readChunks. */
     Flux<JsonEvent> readChunkEvents(Publisher<? extends JsonInputChunk> input);

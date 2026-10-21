@@ -12,9 +12,11 @@ import reactor.core.publisher.SynchronousSink;
 /** Owns one serial parser operation at a time. Cancellation marks the resource closed without
  * waiting; an active owner performs the single cleanup when it releases the operation.
  */
-final class ReadSessionResource<T> extends OperationResource {
+final class ReadSessionResource<T> extends OperationResource
+        implements JsonReadSession.Receiver<T, JsonReadSession.State> {
     private JsonReadSession<T> session;
     private JsonInputChunk chunk;
+    private T value;
     private final BooleanSupplier cancellation = this::cancelled;
     private final JsonReadOptions.NullPolicy nullPolicy;
     // concatMap serializes drain subscriptions. Reuse the publisher, never its subscription/demand.
@@ -74,13 +76,25 @@ final class ReadSessionResource<T> extends OperationResource {
 
     private void emit(SynchronousSink<T> sink) {
         while (!cancelled()) {
-            JsonReadSession.Result<T> result = read();
-            if (result.state() != JsonReadSession.State.VALUE) {
+            if (!acquire()) {
+                break;
+            }
+            JsonReadSession.State state;
+            T next;
+            try {
+                state = readOwned();
+                next = value;
+            } finally {
+                value = null;
+                release();
+            }
+            // Downstream can synchronously cancel/reenter; native ownership has already ended.
+            if (cancelled() || state != JsonReadSession.State.VALUE) {
                 sink.complete();
                 return;
             }
-            if (result.value() != null) {
-                sink.next(result.value());
+            if (next != null) {
+                sink.next(next);
                 return;
             }
             if (nullPolicy == JsonReadOptions.NullPolicy.FAIL) {
@@ -101,19 +115,18 @@ final class ReadSessionResource<T> extends OperationResource {
         }
     }
 
-    JsonReadSession.Result<T> read() {
-        if (!acquire()) {
-            return JsonReadSession.Result.end();
-        }
-        try {
-            JsonReadSession.Result<T> result;
-            do {
-                result = session.read(cancellation);
-            } while (!cancelled() && result.state() == JsonReadSession.State.NEED_INPUT && feedNextBuffer());
-            return result;
-        } finally {
-            release();
-        }
+    private JsonReadSession.State readOwned() {
+        JsonReadSession.State state;
+        do {
+            state = session.read(this, cancellation);
+        } while (!cancelled() && state == JsonReadSession.State.NEED_INPUT && feedNextBuffer());
+        return state;
+    }
+
+    @Override
+    public JsonReadSession.State receive(JsonReadSession.State state, T next) {
+        value = next;
+        return state;
     }
 
     void endInput() {
@@ -130,6 +143,7 @@ final class ReadSessionResource<T> extends OperationResource {
     protected void closeOwned() {
         JsonReadSession<T> owned = session;
         session = null;
+        value = null;
         // The native parser may still access its borrowed view during close.
         try {
             owned.close();

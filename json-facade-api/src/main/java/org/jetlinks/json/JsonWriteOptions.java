@@ -19,4 +19,14 @@ public record JsonWriteOptions(Format format, int chunkSize, int maxValueBytes) 
     public static JsonWriteOptions of(Format format) {
         return new JsonWriteOptions(format, 8192, JsonOptions.DEFAULT.maxValueBytes());
     }
+
+    /** Copy a positive chunk size, preserving output format and record budget. */
+    public JsonWriteOptions withChunkSize(int value) {
+        return new JsonWriteOptions(format, value, maxValueBytes);
+    }
+
+    /** Copy a positive record-byte budget, preserving output format and chunk size. */
+    public JsonWriteOptions withMaxValueBytes(int value) {
+        return new JsonWriteOptions(format, chunkSize, value);
+    }
 }

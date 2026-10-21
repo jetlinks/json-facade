@@ -41,11 +41,11 @@ public final class JsonValues {
     }
 
     public static JsonValue nullValue() {
-        return new Scalar(null, false, null, JsonPath.ROOT);
+        return new BaseValue(null, false, null, JsonPath.ROOT);
     }
 
     public static JsonValue missingValue() {
-        return new Scalar(null, true, null, JsonPath.ROOT);
+        return new BaseValue(null, true, null, JsonPath.ROOT);
     }
 
     public static JsonObject object() {
@@ -75,7 +75,7 @@ public final class JsonValues {
 
     /** Borrow only for immediate synchronous binding. Providers must not expose or retain this graph. */
     public static Object bindingValue(Object value) {
-        if (value instanceof Scalar node) {
+        if (value instanceof BaseValue node) {
             node.checkPresent();
             return node.value;
         }
@@ -89,12 +89,12 @@ public final class JsonValues {
         if (node.isMissing() || node.isNull()) {
             return null;
         }
-        if (!(node instanceof Scalar scalar) || scalar.mapper == null) {
+        if (!(node instanceof BaseValue view) || view.mapper == null) {
             throw failure(node, JsonException.Kind.CONFIGURATION, JsonFailure.Reason.CONVERSION,
                     "Present JSON conversion requires a mapper-created tree or explicit mapper.convert");
         }
         try {
-            T result = scalar.mapper.convert(node, type);
+            T result = view.mapper.convert(node, type);
             if (result == null && target instanceof Class<?> raw && raw.isPrimitive()) {
                 throw new JsonException(JsonException.Kind.BINDING, "Provider returned null for a primitive target");
             }
@@ -171,7 +171,7 @@ public final class JsonValues {
         if (value instanceof List<?> list) {
             return new ArrayValue(list, mapper, path);
         }
-        return new Scalar(value, false, mapper, path);
+        return new BaseValue(value, false, mapper, path);
     }
 
     private static Object copy(Object value) {
@@ -179,29 +179,13 @@ public final class JsonValues {
             return copy(bindingValue(node));
         }
         if (value instanceof Map<?, ?> map) {
-            Map<String, Object> result = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                if (!(entry.getKey() instanceof String name)) {
-                    throw new IllegalArgumentException("JSON object keys must be Strings");
-                }
-                result.put(name, copy(entry.getValue()));
-            }
-            return result;
+            return copyObject(map);
         }
         if (value instanceof Collection<?> collection) {
-            List<Object> result = new ArrayList<>(collection.size());
-            for (Object child : collection) {
-                result.add(copy(child));
-            }
-            return result;
+            return copyCollection(collection);
         }
         if (value != null && value.getClass().isArray()) {
-            int length = Array.getLength(value);
-            List<Object> result = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) {
-                result.add(copy(Array.get(value, i)));
-            }
-            return result;
+            return copyArray(value);
         }
         if (value instanceof Number) {
             if (!IMMUTABLE_NUMBERS.contains(value.getClass())) {
@@ -215,22 +199,51 @@ public final class JsonValues {
         throw new IllegalArgumentException("Use JsonMapper.toTree for Java objects");
     }
 
-    private static class Scalar implements JsonValue {
+    private static Map<String, Object> copyObject(Map<?, ?> source) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : source.entrySet()) {
+            if (!(entry.getKey() instanceof String name)) {
+                throw new IllegalArgumentException("JSON object keys must be Strings");
+            }
+            result.put(name, copy(entry.getValue()));
+        }
+        return result;
+    }
+
+    private static List<Object> copyCollection(Collection<?> source) {
+        List<Object> result = new ArrayList<>(source.size());
+        for (Object child : source) {
+            result.add(copy(child));
+        }
+        return result;
+    }
+
+    private static List<Object> copyArray(Object source) {
+        int length = Array.getLength(source);
+        List<Object> result = new ArrayList<>(length);
+        for (int i = 0; i < length; i++) {
+            result.add(copy(Array.get(source, i)));
+        }
+        return result;
+    }
+
+    /** Shared storage, mapper and access location for scalar, container and absent views. */
+    private static class BaseValue implements JsonValue {
         private final Object value;
         private final boolean missing;
         final JsonMapper mapper;
         final JsonPath path;
 
-        Scalar(Object value, boolean missing, JsonMapper mapper, JsonPath path) {
+        BaseValue(Object value, boolean missing, JsonMapper mapper, JsonPath path) {
             this.value = value;
             this.missing = missing;
             this.mapper = mapper;
             this.path = path;
         }
 
-        Scalar(JsonValue absent) {
-            this(null, absent.isMissing(), absent instanceof Scalar scalar ? scalar.mapper : null,
-                    absent instanceof Scalar scalar ? scalar.path
+        BaseValue(JsonValue absent) {
+            this(null, absent.isMissing(), absent instanceof BaseValue view ? view.mapper : null,
+                    absent instanceof BaseValue view ? view.path
                             : JsonPath.location(absent.pointer(), absent.displayPath()));
         }
 
@@ -274,12 +287,54 @@ public final class JsonValues {
 
         @Override
         public JsonValue get(String name) {
-            return new Scalar(null, true, mapper, path.field(name));
+            return new BaseValue(null, true, mapper, path.field(name));
         }
 
         @Override
         public JsonValue get(int index) {
-            return new Scalar(null, true, mapper, path.index(index));
+            return new BaseValue(null, true, mapper, path.index(index));
+        }
+
+        @Override
+        public JsonValue at(JsonPointer pointer) {
+            List<String> segments = pointer.segments();
+            if (segments.isEmpty()) {
+                return this;
+            }
+            if (segments.size() == 1) {
+                return JsonValue.super.at(pointer);
+            }
+            // Traverse storage without intermediate views; diagnostics must not retain ancestor data.
+            Object current = value;
+            boolean absent = missing;
+            boolean array = this instanceof JsonArray;
+            boolean[] indices = null;
+            for (int i = 0; i < segments.size(); i++) {
+                String segment = segments.get(i);
+                long index = array ? JsonArrayIndex.parse(segment) : -1;
+                if (array && index >= 0 && index <= Integer.MAX_VALUE) {
+                    if (indices == null) {
+                        indices = new boolean[segments.size()];
+                    }
+                    indices[i] = true;
+                    if (current instanceof List<?> list && index < list.size()) {
+                        current = list.get((int) index);
+                        absent = false;
+                    } else {
+                        current = null;
+                        absent = true;
+                    }
+                } else if (current instanceof Map<?, ?> map) {
+                    current = map.get(segment);
+                    absent = current == null && !map.containsKey(segment);
+                } else {
+                    current = null;
+                    absent = true;
+                }
+                array = current instanceof List<?>;
+            }
+            JsonPath selected = path.select(segments, indices);
+            return absent ? new BaseValue(null, true, mapper, selected) : wrap(current, mapper, selected);
         }
 
         @Override
@@ -290,13 +345,13 @@ public final class JsonValues {
         @Override
         public JsonValue deepCopy() {
             if (missing) {
-                return mapper == null ? JsonValue.MISSING : new Scalar(null, true, mapper, JsonPath.ROOT);
+                return mapper == null ? JsonValue.MISSING : new BaseValue(null, true, mapper, JsonPath.ROOT);
             }
             return wrap(copy(value), mapper, JsonPath.ROOT);
         }
     }
 
-    private static final class ObjectValue extends Scalar implements JsonObject {
+    private static final class ObjectValue extends BaseValue implements JsonObject {
         private final Map<String, Object> values;
 
         @SuppressWarnings("unchecked")
@@ -310,7 +365,7 @@ public final class JsonValues {
             JsonPath child = path.field(name);
             Object value = values.get(name);
             return value != null || values.containsKey(name) ? wrap(value, mapper, child)
-                    : new Scalar(null, true, mapper, child);
+                    : new BaseValue(null, true, mapper, child);
         }
 
         @Override
@@ -336,7 +391,7 @@ public final class JsonValues {
         }
     }
 
-    private static final class ArrayValue extends Scalar implements JsonArray {
+    private static final class ArrayValue extends BaseValue implements JsonArray {
         private final List<Object> values;
 
         @SuppressWarnings("unchecked")
@@ -349,7 +404,7 @@ public final class JsonValues {
         public JsonValue get(int index) {
             JsonPath child = path.index(index);
             return index >= 0 && index < values.size() ? wrap(values.get(index), mapper, child)
-                    : new Scalar(null, true, mapper, child);
+                    : new BaseValue(null, true, mapper, child);
         }
 
         @Override
@@ -376,7 +431,7 @@ public final class JsonValues {
     }
 
     /** Absent typed views are read-only and distinct from actual empty containers. */
-    private static final class AbsentObject extends Scalar implements JsonObject {
+    private static final class AbsentObject extends BaseValue implements JsonObject {
         AbsentObject(JsonValue node) {
             super(node);
         }
@@ -397,7 +452,7 @@ public final class JsonValues {
         }
     }
 
-    private static final class AbsentArray extends Scalar implements JsonArray {
+    private static final class AbsentArray extends BaseValue implements JsonArray {
         AbsentArray(JsonValue node) {
             super(node);
         }

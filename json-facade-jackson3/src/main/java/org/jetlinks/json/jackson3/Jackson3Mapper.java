@@ -35,6 +35,12 @@ final class Jackson3Mapper implements JsonMapper {
     }
 
     @Override
+    public byte[] writeBytes(Object value) {
+        // String output inherits this byte path, preserving its UTF-8 escaping.
+        return Jackson3Support.call(() -> mapper.writeValueAsBytes(unwrap(value)));
+    }
+
+    @Override
     public void write(Object value, OutputStream output) {
         java.util.Objects.requireNonNull(output, "output");
         Jackson3Support.call(() -> {
@@ -59,6 +65,13 @@ final class Jackson3Mapper implements JsonMapper {
             compactWriter.writeValue(output, unwrap(value));
             return null;
         });
+    }
+
+    @Override
+    public <T> T read(byte[] input, JsonType<T> type) {
+        java.util.Objects.requireNonNull(input, "input");
+        java.util.Objects.requireNonNull(type, "type").type();
+        return Jackson3Support.call(() -> mapper.readValue(input, mapper.constructType(type.type())));
     }
 
     @Override

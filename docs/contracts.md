@@ -1,377 +1,301 @@
 # Public contracts
 
-For installation, configuration and end-to-end usage examples, see the [Chinese user guide](user-guide.md).
+For installation and examples, see the [Chinese user guide](user-guide.md).
+This document describes the current implementation and its verification boundaries.
 
-## Boundary and configuration
+## Responsibility and configuration
 
-The facade handles explicit JSON calls in programs: binding, conversion, tree manipulation, cursor operations and manually composed byte streams. HTTP request/response codecs, WebClient, SSE and ORM integrations use their official configuration. Core API and Providers have no Spring/Netty dependency. The optional Spring module adapts the host's configured mapper; the optional Netty module explicitly adapts pooled-buffer ownership.
+The facade serves manual JSON operations. HTTP codecs, ORM configuration, network
+framing and application transactions remain host responsibilities. Java 17 is the
+minimum; the API has only JDK dependencies. Providers, Reactor and transports are
+separate modules.
 
-`JsonProvider` is the only engine factory SPI. `JsonModule`/`JsonAdapter` express neutral binding extensions. `JsonMapperBuilder.configureNative(Class<C>, Consumer<? super C>)` configures the selected Provider's native builder through a typed build-time callback. The immutable configuration is fully applied before publishing a mapper. Ordinary callers never receive the native mapper, and binding operations never mutate shared configuration.
-
-Explicit Provider selection wins. Discovery is scoped to the builder's ClassLoader, with no permanent ClassLoader cache. An ambiguous classpath, duplicate Provider/module identity, duplicate exact-class adapter or mismatched native configuration type fails before use. Unsupported configuration is never ignored.
-
-Native configuration uses one common entry point rather than Provider-specific extension wrappers. Each build creates a fresh native builder, validates all callback types before invoking any callback, and applies callbacks in registration order on the building thread. Callbacks must be thread-safe when reused across concurrent builds, must not perform I/O, and must not retain or publish the borrowed builder. Callback failures are CONFIGURATION errors with the original cause. The Provider validates the completed native configuration before publishing the mapper: shared JsonOptions policies and parser budgets remain authoritative, and single-root reads, caller-owned IO and incomplete-document behavior cannot be disabled. Conflicting native settings fail at build time; configure shared policies through JsonOptions, and use native callbacks for modules, mixins and other engine-specific policies. Validation covers native configuration values, not arbitrary behavior inside user serializers.
-
-Configuration assembly is owned by the API and each Provider. Contract tests cover typed native access, callback order and per-build isolation, mismatch/failure behavior, native modules/mixins, and rejection of conflicting policies in both real engines.
-
-Options define lossless untyped decimal binding, unknown properties, duplicate keys, omission of nulls, pretty synchronous output, parser depth/string/number constraints and a materialized-record byte budget. Streaming output is always compact, including when synchronous output is pretty. Assembly of each named configuration remains a host concern.
-
-## Shared mapper instances
-
-`Json.global()` returns the shared default JsonMapper directly; `defaultMapper()` delegates to the same instance. A host may configure an ordinary builder and call `registerGlobal(mapper)` before first use. Otherwise the default is lazily built with the existing unambiguous Provider discovery rules. Creation and registration are coordinated so exactly one instance is published; successful reads remain stable, and failed construction publishes nothing, preserves its exception and allows later explicit registration. Recursive default initialization or registration during its own construction fails with CONFIGURATION.
-
-`registerGlobal(scope, mapper)` publishes an already configured JsonMapper implementation under a case-sensitive name, and `global(scope)` only looks it up. Names must be non-null, nonblank and have no leading/trailing whitespace. Unknown names fail with CONFIGURATION rather than falling back or constructing a mapper. Duplicate registration, including the same instance, fails with CONFIGURATION; initialized defaults cannot be replaced. Invalid names throw IllegalArgumentException and null arguments throw NullPointerException. Each registration is independent, not an atomic multi-name transaction.
-
-`registerGlobalFactory(Supplier<? extends JsonMapper>)` reserves the default without building it. First lookup invokes the factory synchronously under the same publication coordination; one successful result is published and its factory reference is dropped. Failure preserves the original exception and permits retry of that factory, but never replacement of its reservation. A null result fails without publication. Recursive access/registration fails with CONFIGURATION. This enables DI bootstrap without constructing beans before their post-processors are registered. The factory owner must release captured short-lived state if startup fails.
-
-Scope names represent a finite set of application-lifetime configurations, not request/tenant IDs or implicit Reactor/ThreadLocal context. Global references live with the ClassLoader loading Json and strongly retain the registered implementation and its adapters. There is no replacement, reset, unregister, background task or automatic close protocol; short-lived plugins and isolated applications should own and inject ordinary builder-created instances. Custom implementations must obey JsonMapper's thread-safety and operation/resource contracts. This configuration registry owns no live sessions and adds no MBean or per-operation tracing; the host owns application-level configuration observation.
-
-Implementation scope is limited to the API's shared-instance management, its concurrency/lifecycle tests, real-Provider assembly tests and usage documentation. Provider parsing, Reactor composition and resource-release algorithms remain unchanged; existing large-document evidence applies to those paths.
-
-## Spring adapter and native snapshots
-
-`json-facade-spring` supports Spring Framework 6 / Spring Boot 3 with Jackson 2.
-Boot discovers `JsonFacadeAutoConfiguration`; plain Spring imports
-`JsonFacadeConfiguration`. The core remains independent of Spring. This adapter
-does not support Boot 4 / Jackson 3 or Gson, and does not infer an engine from HTTP
-converter ordering. It selects the unique or primary managed `ObjectMapper` using
-Spring's type resolution. Missing/ambiguous candidates fail; no mapper is silently
-constructed from Provider discovery. A host-defined `JsonMapper` bean takes
-precedence and must be a singleton when used as the global default.
-
-The static `SpringJsonBootstrap` bean registers a facade definition only after
-ordinary bean definitions are available. Its bean-factory callback reserves the
-global factory before normal singleton creation without creating native beans.
-First global access resolves the fully initialized facade bean; singleton
-completion also resolves it to surface startup errors. Ordinary business-bean
-initialization can use the default. Native mapper/customizer/host facade
-construction cannot depend on that same global: Spring circular-dependency or
-facade recursive-initialization errors are propagated. As with other early
-configuration, calls before this callback (including other bean-factory
-post-processors) cannot rely on Spring registration.
-
-`json.facade.global-enabled=false` leaves the global untouched and keeps an
-injectable facade. `json.facade.enabled=false` disables Boot auto-configuration.
-`json.facade.max-value-bytes` defaults to 8 MiB and configures incremental-record
-bytes on the adapted facade. An existing global reservation or initialized default
-fails startup rather than being replaced. Named configurations stay explicit.
-Closing the context never resets the ClassLoader-owned default. Repeated/isolated
-contexts must disable global registration and inject context-owned instances.
-After failed startup, the reservation remains but the disposable bootstrap drops
-its BeanFactory reference; a lookup then fails as a closed context rather than
-retaining/restarting it. Successful publication also drops factory references.
-
-`Jackson2Provider.adapt(ObjectMapper[, int maxValueBytes])` is a reusable,
-framework-independent snapshot factory. Native modules, mixins, naming, dates,
-coercion and full inclusion settings (`NON_EMPTY`, custom filters, content/type/
-property rules) are retained through native `copy()`. Custom serializers/handlers
-are shared according to Jackson's copy semantics and must be thread-safe. Source
-configuration and factory flags are unchanged; subsequent source changes are not
-followed. Copy-unsupported subclasses and non-JSON factories fail at adaptation.
-Spring handler instantiators and custom serializers may themselves retain container
-dependencies; a globally registered snapshot therefore has application/ClassLoader
-lifetime and is not an unloadable context snapshot.
-
-The snapshot installs neutral tree support, requires single-root binding, disables
-source/target auto-close, incomplete-container repair and source-in-location.
-Native read/write depth limits are aligned to their minimum; remaining native
-read constraints are preserved. `options()` reports the imported native binding
-flags and effective budgets. Its `omitNulls` flag recognizes global value
-inclusion `NON_NULL`, `NON_ABSENT`, `NON_EMPTY`, `NON_DEFAULT`; it is not a full
-description of custom filters or content/type/property inclusion. Arbitrary native
-inclusion is preserved, not reduced to this flag. Ordinary builder construction
-still uses authoritative `JsonOptions` and rejects conflicting native callbacks.
-Existing Provider streaming implementations are reused. This configuration-only
-adapter changes no HTTP codec and adds no tracing, background executor or MBean.
-
-## Spring DataBuffer streams
-
-`json-facade-spring` provides `DataBufferJsonStreamMapper.of(JsonMapper,
-DataBufferFactory)` for explicit Spring 6 buffer streams. Record `read`/`write`
-and structural `readEvents`/`writeEvents` reuse existing options, selection,
-budgets and Provider parsing/binding. Either current Provider can be supplied.
-The factory is explicit, normally `response.bufferFactory()`. The adapter
-shares configuration but creates state per subscription, without scheduling,
-internal subscriptions or whole-document aggregation.
-
-`read`/`readEvents` consume one transferred ownership per delivered DataBuffer,
-matching Spring request-body/decoder conventions. They do not retain another
-reference. A caller keeping an additional pooled reference must retain it
-explicitly and release its own reference. Upstream owns undelivered buffers and
-its queues; bytes/components must remain stable until consumed. Input read/write
-positions are preserved.
-
-`DataBuffer.readableByteBuffers()` provides component views without joining or
-copying whole chunks. Its closeable iterator remains alive while the Provider
-borrows any view. Consumption, error and cancellation close that iterator before
-calling `DataBufferUtils.release` once for the owned buffer. Active callbacks
-must return first. Cleanup releases the buffer even if iterator close fails,
-and closed owners detach both references. Pooled and CloseableDataBuffer cleanup
-use Spring's own release utility; ordinary buffers require no explicit release.
-
-Output uses bounded segments allocated by the supplied thread-safe
-DataBufferFactory. Emission transfers ownership downstream, for example to
-`ServerHttpResponse.writeWith`. The adapter releases unpublished buffers on
-error/cancellation; downstream owns consumed buffers and additional queues or
-discards it introduces. Native encoding and generator-to-segment copying remain:
-avoiding whole-input copies/intermediate output arrays is not an end-to-end
-zero-copy or throughput guarantee.
-
-Reactor is an optional compile dependency: DataBuffer streaming callers add
-`json-facade-reactor`, while ordinary Spring mapper/global configuration can load
-without Boot, Reactor or Netty. Spring reactive HTTP integration and Netty are
-test dependencies only. This explicit adapter does not replace HTTP codecs or change global
-registration. The existing Reactor transport SPI owns framing and resource
-coordination, with no Provider parser forks, extra pools or background resources.
-
-Tests cover real Provider conversion, Default/Netty factories, component/UTF8
-boundaries, indices, demand, iterator lifetime, native-callback cancellation,
-discard and actual HTTP request-body/response-write composition. The standalone
-`scripts/run-databuffer-stress.py` covers generated large input/output and
-structured-document copying under 128 MiB heap/32 MiB direct memory. Its
-`--release-only` mode retains 192 closed owners after 1 MiB allocations per owner,
-without explicit GC, checking that their former storage can be reclaimed/reused.
-
-Java 17/21 quality gates pass with zero failures, errors or skips;
-Checkstyle and SpotBugs report no issues. On each JDK, the DataBuffer matrix
-passes 32 documents of at least 1 GiB, 64 small-chunk cases and eight retained
-closed-owner forks. Pooled factories finish with zero pinned bytes. The existing
-[PR](https://github.com/jetlinks/json-facade/pull/1) records the validation scope;
-unchanged Provider/Reactor/Netty large-document evidence is reused.
-
-## Netty buffers and ownership
-
-The optional `json-facade-netty` module targets Netty 4.1 buffers and
-reuses `json-facade-reactor`. Core API, Providers and ordinary Reactor usage keep
-their dependency boundaries. JSON syntax, token constraints, native binding and
-configuration remain Provider responsibilities. The adapter owns only transport
-memory.
-
-The adapter eliminates whole-input-chunk copies and intermediate output
-arrays at the facade/Netty boundary. Jackson 2.22.3 source and Jackson 3.0.3
-bytecode confirm their nonblocking ByteBuffer feeders retain the supplied buffer
-rather than copying the whole chunk. Token decoding and Java binding still
-allocate. Native generators encode into their own buffers and write to an
-OutputStream; copying those bytes into a pooled ByteBuf remains necessary with
-these supported APIs. Network/TLS/kernel behavior is outside this guarantee.
-
-The application entry point is
-`NettyJsonStreamMapper.of(mapper, allocator)`, with record `read`/`write` and
-structural `readEvents`/`writeEvents` operations. Reading uses the existing
-`JsonType`/`JsonReadOptions`; writing uses `JsonWriteOptions`. The allocator is
-explicit so callers can reuse the channel allocator and choose pooled heap or
-direct buffers. Runtime dependencies include Netty buffer/common; Reactor Netty
-is used for integration tests and examples, not required by the adapter.
-
-Input has two explicit ownership contracts:
-
-- Default `read` and `readEvents` borrow each published ByteBuf and synchronously
-  retain one adapter-owned reference during input delivery. This supports direct
-  use with Reactor Netty `receive()`, which releases its own reference after
-  delivery. The source owner remains responsible for its original reference;
-  callers must keep published bytes stable while the retained lease is active.
-- `readOwned` and `readOwnedEvents` accept transfer of one existing reference per
-  delivered buffer, for sources whose buffers belong to the subscriber. They do
-  not add another retain. Undelivered source buffers remain the source's
-  responsibility. Already retained Reactor Netty input uses this contract.
-
-Neither contract changes reader/writer indices. Single-component buffers expose
-a view of their readable region. Composite buffers expose their component NIO
-views sequentially without consolidation or `nioBuffer()` merging. Buffers that
-cannot expose NIO views fail explicitly rather than silently copying. Each owned
-reference is released exactly once after all its views have been consumed or
-after parser cleanup on failure/cancellation. Cancellation during an active
-native/user callback defers release until that operation returns. Retain protects
-lifetime, not concurrent mutation; async boundaries before adapter delivery are
-the upstream owner's responsibility.
-
-Output uses allocator-owned, bounded ByteBuf segments directly as the generator's
-OutputStream target. Sealing advances the readable range without copying a short
-tail. Publication transfers one reference to downstream; Reactor Netty `send`
-owns buffers accepted for writing. Other consumers release emitted buffers and
-arrange cleanup for queues/discards they introduce. The adapter releases only
-its current/queued/unpublished buffers, including cancellation races and failed
-serialization. It never releases an already transferred reference. Native flush
-on failed/cancelled close cannot create retained output. One bound value remains
-a synchronous, byte-budgeted write unit; event output streams aggregate structure.
-
-Reactor's `spi.JsonInputChunk` transfers a closeable lease exposing successive
-ByteBuffer views; `spi.JsonBufferAllocator<B>` allocates, writes, seals and releases
-output storage. `readChunks`/`readChunkEvents` and `writeChunks`/`writeEventChunks`
-compose these extension points using the same state machines as ordinary streams.
-Existing readBuffers keeps its immediate-copy
-contract. Framing, structural validation, byte budgets, demand, exception handling
-and OperationResource cancellation coordination are shared rather than copied
-into a Netty-specific parser/serializer. No source aggregation, internal
-subscription, forced scheduler, HTTP codec replacement or native generator fork
-is introduced. The host retains tracing and allocator observation; this adapter adds
-no background resource or separate global buffer pool/MBean.
-
-Validation covers both real Providers; heap/direct/sliced/read-only/composite
-buffers; multibyte tokens across components; source EOF/errors; slow demand;
-all formats, pointer selection and structural events; indices and exact refCnt
-ownership; parse/serialization failures; queued discards; cancellation including
-an active callback; and actual Reactor Netty receive/send integration.
-`scripts/run-netty-stress.py` generates input directly into pooled buffers and
-independently validates output with a native parser, requesting one item at a time.
-Its default matrix streams at least 1 GiB per document with 128 MiB heap / 32 MiB
-direct memory; `--release-only` retains closed owners whose former storage exceeds
-those limits. Each run requires zero remaining pinned bytes.
-`scripts/run-streaming-benchmarks.py --netty` compares copying ByteBuffer, owned
-byte arrays and Netty paths using equal documents/chunk sizes and JMH GC profiling.
-Allocator pinned-memory evidence complements heap allocation measurements; pooled
-reserved memory is not itself a leak. Heap/direct and small/large record results
-determine recommendations; direct memory is not assumed faster. These measurements
-exclude network/TLS work.
-
-## Types, tree and cursors
-
-### Typed access, validation and locations
-
-Tree access is owned by the API/shared JDK tree and both Jackson Providers.
-Node-level `as(Class/JsonType)`, common scalar conversions (including nullable
-`asInteger`), and non-null `getObject/getArray` views support both names and indices. Missing,
-JSON null and out-of-range reads remain chainable; typed shape mismatches and failed
-conversions throw. Primitive convenience methods use zero/false, or an explicit default,
-only for missing/null input. Present values follow the owning Provider's conversion policy.
-Static structural factories stay configuration-free; conversion of a present value requires
-a mapper-created/bound tree or explicit `mapper.convert`. No implicit global fallback exists.
-
-Mapper factories, tree reads/conversion, typed/nested DTO reads, cursor and incremental
-binding must attach the configured mapper. Nested views and deep copies retain it; copies
-start a new root location and insertion takes the destination location/configuration.
-Paths belong to access views, including absent object/array views, rather than backing data.
-They retain only immutable segments, never ancestor nodes; render strings/pointers on demand.
-Absent views of third-party storage snapshot its public `pointer()` and `displayPath()`;
-numeric object keys retain the display spelling chosen by that storage. They never retain
-the source node. Custom storage overrides both location methods for non-root locations.
-This adds no whole-tree copy per access, scheduler, tracing, MBean or long-lived cache.
-
-`requirePresent`, `requireNonNull` and predicate-based `require` return the current node
-on success. Failure passes immutable structured metadata to a lazy exception factory;
-custom exceptions and predicate failures propagate unchanged. Default failures use
-`JsonException` with VALIDATION kind. Unified failures carry reason, RFC 6901 pointer,
-escaped display path and original cause. Provider normalization extracts native structured
-paths; tree conversion prefixes its access path without nesting repeated facade exceptions.
-Upstream reactive errors and ordinary API argument errors retain their existing contracts.
-There is no new getter SPI, parser fork, automatic node creation or schema-validation DSL.
-
-Real-engine contract/configuration tests cover missing/null/shape/range cases, custom exceptions,
-native coercion/overflow/adapters, nested DTO/generic/cursor/session trees, mapper isolation,
-copy/insertion locations and retained failure/view memory boundaries. Existing transport
-algorithms remain shared. The standalone TCK `JsonTreeAccessStress` retains child/absent
-views and validation errors while allocating 512 MiB of former ancestor storage under a
-64 MiB heap, with no explicit GC. It also retains 512 foreign absent views whose source
-nodes own that ancestor storage, for 1536 retained views in total. Path segments store numeric
-indices directly and render their strings only on diagnostic access.
-Run it with `python3 scripts/run-tree-access-stress.py`;
-the Java 17/21 CI matrix includes this retained-view regression.
-
-The tree-isolation correction passes the full Java 17.0.18 / 21.0.10 quality gates
-with 194 tests on each JDK, zero failures/errors/skips, no Checkstyle/SpotBugs issues,
-and every production module above the 80% aggregate branch-coverage threshold.
-Both 64 MiB retained-tree forks pass on each JDK, including foreign storage.
-The existing `749cce6` evidence remains applicable to unchanged transport algorithms:
-each JDK passed 24 closed-resource forks (64 MiB heap / 32 MiB direct memory) and
-18 streaming forks with at least 1 GiB per document under a 128 MiB heap, covering
-both Providers and adapted Jackson 2 across array/NDJSON/wrapped reads,
-array/NDJSON writes and document copying. Earlier Netty/DataBuffer GiB evidence
-also remains applicable. These regressions establish bounded retention, not a
-throughput gain or an allocation-free tree API. Delivery remains [draft PR #1](https://github.com/jetlinks/json-facade/pull/1).
-
-`JsonType<T>` stores JDK Type and captures nested generics without Jackson or Spring types. Conversion is JSON binding, not bean copying; object identity is not preserved. `read` requires one full root value and rejects trailing nonwhitespace content. Empty input differs from JSON null.
-
-`JsonValue` is the common tree interface; `JsonObject` and `JsonArray` expose typed mutable containers. Provider-created mappers own `createObject()` / `createArray()` and Map/Collection initialization. The default implementation uses JDK containers. Initializers and put/add/set copy nested JSON containers; explicit nulls are retained and all object keys must be Strings. Inputs must be acyclic JSON-compatible values; use configured `toTree` for arbitrary POJOs. `JsonValue.of` copies Java containers but retains an existing node's identity. Its static object/array methods are configuration-free structural shortcuts.
-
-Structural numbers must have exactly one of the immutable JDK classes Byte, Short,
-Integer, Long, Float, Double, BigInteger or BigDecimal. Other Number implementations,
-including subclasses of BigInteger/BigDecimal, are rejected before mutation with
-IllegalArgumentException; configured `toTree` applies Provider binding to them instead.
-This rule also applies recursively to third-party node exports on insertion. Binding
-results are copied: custom native deserializers can return shared containers, so parsing
-alone does not authorize taking ownership. No allocation/throughput gain is claimed.
-
-`NULL` and `MISSING` are distinct non-null root sentinel nodes. Access views retain locations;
-test `isNull/isMissing` rather than singleton identity. RFC 6901 pointers support escaped
-`/` and `~`; `JsonPointer.toString()` encodes them. Array indices use canonical decimal notation.
-`asObject/asArray` reject other shapes, including absent typed views. `toJavaValue` exports an
-independent Map/List snapshot; `deepCopy` returns an independent tree. Cross-Provider nodes
-obey the same logical-value contract. Provider binding can synchronously borrow its own JDK
-tree without making an export snapshot, but cannot expose or retain that backing graph.
-Trees are not thread-safe.
-
-Reader `readValue`/`skipValue` consume the whole current value. Its next `next()` returns the successor token. Readers/writers/sessions are operation-local and not thread-safe. Their close methods release internal state and do not close caller sources/targets. Closed wrappers must also detach native cursors, binding contexts and borrowed input/output references, including when native cleanup fails; retaining a closed wrapper must not retain its former buffers or target. Reactor resources detach their owned session/writer, and discarded segmented output releases its queue storage. Writer close does not repair incomplete containers. UTF-8 is the byte encoding; character sources/targets keep their character semantics.
-
-## Incremental reads
-
-| Mode | Contract |
+| Layer | Responsibility |
 | --- | --- |
-| SINGLE_VALUE | One complete root value, including a root array bound as one collection |
-| ARRAY_ELEMENTS | Root must be an array; direct elements are emitted, nested arrays stay whole |
-| NDJSON | LF/CRLF lines each contain one root value; blank lines skip; final LF optional; multiline records and multiple values per line fail |
-| ROOT_VALUES | Complete root values separated by JSON whitespace; no automatic array flattening |
+| Provider | Native tokenization, binding, configured extensions and native resource lifecycle |
+| Shared API | Neutral types, tree semantics, framing, selection and value budgets |
+| Reactor | Demand, cancellation and safe coordination of operation-local resources |
+| Netty / Spring buffers | Input leases and output ownership, using the shared stream implementation |
 
-SINGLE_VALUE and ARRAY_ELEMENTS reject empty input. NDJSON and ROOT_VALUES permit zero records. Scalars such as numbers are not complete merely because an input chunk ended; the engine must see a separator or true EOF.
+`JsonProvider` exposes only `id()` and `create(JsonConfiguration)`. Discovery
+requires one unambiguous match; duplicate IDs, missing candidates and ambiguity
+fail before use. Parse failures never cause engine fallback. A Provider must
+support the public incremental contracts; collecting a stream is not a substitute.
 
-Selection is an RFC 6901 pointer on a SINGLE_VALUE document. It selects either the pointed value or direct elements of the pointed array. Missing path and wrong target shape fail; an empty target array completes normally. Duplicate occurrences of the selected path fail, since previously emitted values cannot be retracted to implement LAST_WINS. Other duplicate-field policies follow the configured engine. Unrelated subtrees are tokenized and constrained, but never collected into a whole-document tree.
+Built mappers are immutable and shareable. Builders, mutable trees, cursors and
+sessions are operation-local. The library creates no background threads, global
+live queues, separate buffer pools, MBeans or per-record tracing.
 
-One Session per operation/subscription. Feed only when needsInput is true. Feed borrows the remaining ByteBuffer region without changing its cursor; callers keep bytes alive and stable until the session requests input again or closes. Read returns exactly one VALUE (possibly Java null), NEED_INPUT or END. endInput signals actual source EOF, and the caller then reads until END. Incomplete UTF-8, escape, number or container input fails. Close is idempotent.
+`JsonOptions` is an immutable record. Its nine `withX` methods preserve other
+fields and reuse canonical validation. Read/write option copies do the same.
+`selectValue/selectElements` create SINGLE_VALUE options with the default FAIL
+null policy and record budget. Class overloads delegate once to the existing
+JsonType entry point; they do not introduce per-record type conversion or a cache.
 
-The current selected record is buffered as engine tokens and bound by the configured engine reader, without converting through a JDK tree or applying serialization policies during a read. Explicit nulls, duplicate-field tokens, numeric policies and custom readers retain their input semantics. Numeric text requested by an adapter or String binding retains the native tokenizer's representation, including decimal scale and exponent notation. This is not a source-text preservation API: both native nonblocking tokenizers normalize integer `-0` to `0`, unlike their synchronous counterparts. Paths are tracked only for pointer selection, using matched-prefix state on the container stack rather than complete per-token path copies. Byte limits and parser token constraints bound that record and the parser's token buffers; total stream length and unrelated document size are caller budgets. Cancelling after a selected prefix does not validate the remainder of its document. Consumers requiring full validation must consume through END.
+`configureNative` callbacks borrow a fresh typed builder per build. All callback
+types are checked before any callback runs; callbacks then run in registration
+order. Type mismatches and conflicts with authoritative `JsonOptions` fail at
+build time. Callbacks must not retain builders or mutate published mappers.
+Native annotations, modules and custom handlers remain explicit engine boundaries.
 
-## Reactor and memory ownership
+Modules and adapters are registered at build time and must be thread-safe.
+Module IDs and adapter classes must be unique. Adapter matching is exact Class,
+without subtype widening or generic-Type registration. Borrowed adapter cursors
+must neither be closed nor retained; each callback consumes or writes one complete
+value. Java null follows mapper policy without invoking an adapter.
 
-`JsonStreamMapper.of(mapper)` shares the configured mapper. Both synchronous and reactive operations use the same neutral/native adapters. Returned publishers are lazy, with independent per-subscription state; repeatability still depends on the source publisher.
+## Binding, types and I/O
 
-readBytes accepts independently owned, immutable-after-publication arrays. readBuffers copies the source's remaining region immediately at the adapter's input onNext before queuing; the original position, limit and mark are preserved, and source storage may be reused after that call. Copying only a read-only view would not protect shared storage. No retain/release protocol is inferred from a ByteBuffer. Asynchronous boundaries before the library still require the upstream owner to keep data valid until delivery.
+`JsonType` captures JDK Type, including nested generics. Anonymous subclasses
+must capture concrete arguments directly. Class inputs are convenience forms;
+there is no declared-type `write(value, JsonType)` overload.
 
-The adapter serializes one input chunk at a time using Reactor's demand-driven operators. No unbounded result queue, internal subscribe, collectList/join, blocking source bridge or forced Scheduler. Cancellation cancels the input without waiting for an active parser operation; the operation owner then closes parser state exactly once before releasing ownership. Upstream errors retain identity. Reactor Context follows the operator chain. Cancellation is observed between parser tokens and skipped null records; an already running custom binding callback must return before its parser state can be released.
+Synchronous `read` requires one complete root and rejects trailing nonwhitespace
+content. Empty input differs from JSON null. `convert` uses configured JSON
+binding, not identity-preserving bean copying. Native coercion, annotations,
+polymorphism, dates and target numeric precision remain Provider behavior.
 
-writeBytes/writeBuffers use ARRAY, LF-delimited NDJSON/ROOT_VALUES, or exactly one bounded SINGLE_VALUE. Empty ARRAY emits brackets; empty NDJSON/ROOT_VALUES emits nothing; empty or multiple SINGLE_VALUE records fail. A compact native generator is reused per subscription, with a fresh binding context for each complete value so object-ID tracking cannot retain earlier records. Bulk writes fill bounded owned segments; full segments transfer directly and only a partial tail may be copied. JSON record bytes are budgeted separately from transport delimiters. Compact output is selected for that operation without modifying the shared mapper; no JSON whitespace filter is applied after serialization. A chunk need not match a record. Demand bounds emitted records/chunks, not token work or heap bytes; the adapter may prepare one next record when a previous inner publisher completes. Output buffers are read-only with independent cursors and memory never reused by the library. A serialization error stops output without adding a normal array terminator; previously emitted bytes cannot be rolled back.
+Byte APIs use UTF-8. Jackson 3 delegates byte[] reads and byte output directly to
+the configured native mapper. Its String output decodes that UTF-8 byte output,
+preserving the same escaping representation. Native Writer output may spell
+Unicode differently. Jackson 2 retains stream-based convenience paths to
+preserve configured IO decoration and original IO error causes.
 
-`readEvents` / `readBufferEvents` emit immutable `JsonEvent` tokens of exactly one complete document, including all container boundaries, field names and scalars. They never buffer an enclosing container. Token text/depth and byte limits remain effective; incomplete tokens still require parser storage. Numeric events carry tokenizer text rather than passing through double; the native negative-zero limitation above still applies. Structural constants may be shared; public payload events cannot be mutated or recycled.
+Caller-supplied InputStream, Reader, OutputStream and Writer remain caller-owned.
+Closing a cursor releases its native state without closing those objects or
+repairing incomplete containers. Reader `readValue/skipValue` consume the whole
+current value; the following `next()` returns its successor. Retained closed
+wrappers must detach native contexts and borrowed input/output references,
+including when cleanup fails.
 
-`writeEvents` / `writeEventBuffers` require SINGLE_VALUE output and validate one balanced document, including object field/value ordering. Token events can build arbitrary nested structures, while `JsonEvent.value(javaValue)` binds one complete byte-bounded value using the configured mapper. Each event is drained before subsequent events advance, so a huge aggregate can be constructed without assembling its complete tree. The current token/bound value remains a synchronous write unit. Container events carry no payload; string/number token text obeys mapper limits. Scalar tokens use the direct `JsonWriter.string/bool/nullValue/number` operations and bypass Java binding adapters. Bound values use the normal binding rules and byte budget. Grammar-validated numeric text cannot inject raw JSON. Errors and cancellation leave an incomplete document, with no automatic repair.
+## Trees, locations and validation
 
-Total document size, current input chunk, token size, depth, current bound value and pending output segments are separate budgets. A 1 GiB array of bounded records or event-based document can run in a much smaller heap. Whole-value binding of a 1 GiB POJO would still materialize that value; callers should stream its structure instead. Individual enormous strings/numbers remain constrained tokens. The library does not suspend or replay an arbitrary native serializer at a byte boundary.
+`JsonValue`, `JsonObject` and `JsonArray` are neutral interfaces; current mapper
+factories use JDK storage. Structural factories accept acyclic JSON-compatible
+scalars, String-keyed Maps, Collections and Java arrays. Arbitrary POJOs use
+configured `toTree`. Structural byte[] becomes an array; native binding can
+encode it as Base64.
 
-With duplicate-key rejection enabled, the native detector also retains the names already seen in each open object. A huge object with many distinct fields can therefore require substantial memory even in event mode; token/depth limits do not bound its field count. Arrays of bounded objects avoid retaining one document-wide field-name set.
+Initializers, insertion, `deepCopy` and `toJavaValue` defensively copy nested
+containers. `JsonValue.of(existingNode)` retains that node's identity. Structural
+numbers accept exactly Byte, Short, Integer, Long, Float, Double, BigInteger and
+BigDecimal; other Number classes, including subclasses of the latter two, fail
+before mutation. Use `toTree` for configured binding of other Java numbers.
+Binding results still require defensive copying: custom native deserializers
+may return shared containers. Synchronous binding may borrow the internal JDK
+tree but must not expose or retain its backing graph.
 
-The library owns no background threads, global live queues or long-lived sessions, so it adds no MBean or per-record tracing. The host retains its observation context and business-level tracing.
+Missing and JSON null are distinct non-null views; inspect `isMissing/isNull`,
+not singleton identity. Missing export fails. RFC 6901 pointers support escaped
+`/` and `~`; readable array indices use canonical decimal notation.
+`getObject/getArray` accept names or indices and keep missing/null locations
+chainable without creating data. Actual shape mismatches fail; absent views
+cannot be mutated. `asObject/asArray` require an actual matching container.
+
+Scalar defaults apply only to missing/null input: primitive methods use zero or
+false, reference methods use null, and explicit defaults are available. Present
+values use configured Provider conversion and propagate failures. Static
+structural factories have no mapper; present-value conversion requires an
+explicit mapper or a mapper-created/bound tree. There is no global fallback.
+Nested views and deep copies preserve mapper configuration; copies start at the
+root, while inserted data uses its destination configuration and location.
+
+Access paths belong to views, not backing data. They retain immutable path
+segments rather than ancestor nodes; strings, pointers and failures are rendered
+on demand. Foreign absent views snapshot public pointer/display locations without
+retaining the source node. A compiled Pointer traverses the JDK tree in O(d),
+creating only the final view; mixed array paths may need O(d) index metadata.
+Cached views continue to refer to their original container after ancestor replacement.
+
+`requirePresent`, `requireNonNull` and predicate `require` return the current
+view on success. Lazy exception factories receive immutable `JsonFailure`;
+their exception instances and predicate failures propagate unchanged. Default
+assertion failures have VALIDATION kind. Failures expose kind, reason, message,
+RFC 6901 pointer, display path and original cause. Provider paths are extracted
+from structured native errors and prefixed with the access path.
+
+Trees are mutable and not thread-safe. There is no public field iterator,
+array remove/insert/clear API or structural node equality contract. Exporting a
+Map/List snapshot copies data; large traversal should use cursors or events.
+
+## Default, named and Spring mappers
+
+`Json.global()` and `defaultMapper()` return the same default. First access may
+discover one Provider, or the host may register a mapper before first use.
+Named configurations are independent, case-sensitive and write-once. Unknown
+names and duplicate registrations fail; names are nonblank without surrounding
+whitespace. There is no fallback, reset, unregister or replacement.
+
+Global references live with the API ClassLoader. Names must be a finite set of
+application configurations. Unloadable plugins and repeated isolated contexts
+should use host-owned instances. Lazy factory reservation does not run the
+factory at registration; failures may retry that same factory, but its reservation
+cannot be replaced. Recursive initialization fails. Failed unreserved default
+discovery does not publish a partial instance.
+
+The optional Spring module supports Spring 6 / Boot 3 Jackson 2 configuration.
+It adapts the unique or primary native bean, unless a host JsonMapper bean takes
+precedence. Plain Spring imports `JsonFacadeConfiguration`; ordinary mapper
+configuration can load without Boot, Reactor or Netty. No Boot 4 bridge is supplied.
+
+`Jackson2Provider.adapt` uses native `copy()`, preserving modules, mixins,
+coercion, dates, naming and full inclusion rules. The source is unchanged and
+later changes are not tracked. Custom handlers retain Jackson's sharing and
+thread-safety semantics. Non-JSON factories and copy-unsupported subclasses fail.
+The snapshot installs tree support, enforces single-root and caller-owned IO
+contracts, disables container repair/source-in-location and aligns read/write
+depth to their minimum. Other native read constraints remain. The reported
+`omitNulls` flag summarizes recognized global inclusion, not all native filters.
+
+Spring reserves the default before ordinary business-bean initialization and
+resolves the fully initialized facade bean. Native mapper/customizer/facade
+construction must not depend on that same global. Earlier bean-factory callbacks
+cannot rely on this registration. Global facade beans must be singletons.
+Existing global reservations or initialized defaults fail startup.
+
+`json.facade.global-enabled=false` leaves only injectable context ownership;
+`json.facade.enabled=false` disables Boot auto-configuration.
+`json.facade.max-value-bytes` defaults to 8 MiB for the adapted mapper.
+Context close never resets globals. Bootstrap drops BeanFactory references after
+publication or failed startup, but the reservation remains. Native handlers may
+retain container dependencies, so global snapshots are not unloadable contexts.
+
+## Incremental reads and structural events
+
+| Read mode | Contract |
+| --- | --- |
+| SINGLE_VALUE | One complete root; empty input fails |
+| ARRAY_ELEMENTS | Direct root-array elements; empty array completes, empty input fails |
+| NDJSON | One value per nonblank LF/CRLF line; no bare CR or multiline record; final LF optional |
+| ROOT_VALUES | Whitespace-separated roots; empty input completes |
+
+Selection is available only in SINGLE_VALUE. It binds one pointed value or the
+direct elements of a pointed array, skipping unrelated subtrees without materializing
+them. Missing, wrong-shaped or repeated selected paths fail; an empty selected
+array completes. Repeated selected paths fail even with duplicate-key detection
+disabled. To validate the complete document, consume it to completion.
+
+Sessions borrow the remaining ByteBuffer region without changing its cursor.
+Feed only when `needsInput()`; keep storage stable until it is requested again
+or the session closes. Call `endInput()` once at real EOF and drain to END.
+VALUE may contain Java null; NEED_INPUT and END are separate states.
+The receiver overload synchronously invokes its receiver exactly once on a
+successful read; exceptions propagate and require closing the failed operation.
+Receivers must not block or reenter. Current Providers deliver directly through
+this generic API; independent Providers may use its default pull bridge.
+
+Native nonblocking parsers own tokenization. Record binding buffers only the
+current record's native tokens; arbitrary native deserializers cannot pause
+mid-call. Event reads deliver one whole SINGLE_VALUE document without collecting
+containers. Cancellation validates only the consumed prefix and does not roll
+back already completed downstream effects.
+
+Events and their payload references are immutable; callers must keep values
+stable during use. Container/boolean/null constants are reusable. Direct scalar
+events bypass Java scalar adapters; `JsonEvent.value` uses configured binding.
+Numeric text is validated in O(n) time/O(1) space without double conversion or raw
+JSON injection. Event copying preserves structure and tokenizer scalar text,
+not source whitespace/escaping; native tokenizers normalize integer `-0` to `0`.
+
+## Reactor, buffers and lifecycle
+
+Each subscription owns fresh operation state, preserves Reactor Context and
+propagates upstream errors unchanged. No internal subscription, blocking IO,
+forced Scheduler or whole-stream collection is introduced. Reactive Java null
+fails by default, may be skipped explicitly, or is represented by JsonValue.
+
+| Memory | Ownership |
+| --- | --- |
+| Input byte[] | Immutable after publication; storage cannot be reused after onNext |
+| Input ByteBuffer | Copied immediately in the adapter's onNext; cursor preserved |
+| Input transport lease | Transferred until views are consumed or parser cleanup finishes |
+| Output byte[] / ByteBuffer | Independent storage transferred downstream; ByteBuffer is read-only with an independent cursor |
+| Netty read/readEvents | Borrow input, retain one reference during delivery; source retains its own responsibility |
+| Netty readOwned/readOwnedEvents | Consume one transferred reference without another retain |
+| Spring DataBuffer input | Consume one transferred ownership without another retain |
+| Netty / DataBuffer output | Transfer ownership downstream; adapter releases unpublished segments |
+
+Async queues before adapter delivery remain the host's responsibility. Read-only
+views do not make shared bytes immutable. Netty preserves indices and traverses
+composite NIO views without consolidation; unsupported NIO access fails.
+Spring keeps `readableByteBuffers()` iterators open while views are borrowed,
+then closes the iterator before releasing input, even if iterator close fails.
+Active native/user callbacks must return before parser close and input release.
+
+Output uses a reusable compact native generator per subscription and fresh
+binding contexts per record, preventing object-ID accumulation. Serial progression
+uses zero prefetch. ARRAY emits `[]` for an empty source; NDJSON/ROOT_VALUES emit
+zero bytes and separate records with LF. SINGLE_VALUE requires exactly one value.
+Event output accepts only SINGLE_VALUE and validates balanced containers,
+field/value ordering and root uniqueness. Errors/cancellation never repair output.
+
+One finite bound value is synchronously encoded into owned segments before
+delivery; demand cannot suspend an arbitrary serializer at a byte boundary.
+Native callback cancellation records termination and cleans up after callback
+return. Downstream owns accepted segments and any queues/discards it adds.
+Reactor Netty send and Spring response writeWith own buffers they accept.
+Native generator-to-segment copying remains; this is not end-to-end zero-copy.
+
+## Limits and performance boundaries
+
+Effective record bytes are the minimum of mapper and operation budgets. Both
+default independently to 8 MiB. Output chunk size defaults to 8192; framing bytes
+are accounted separately from values. These limits do not bound synchronous
+whole-value operations, total stream bytes, source chunk size, bound Java-object
+overhead, concurrency or RSS.
+
+Token length, depth, current record, output segments, host concurrency, cumulative
+bytes and time require separate budgets. Duplicate-key detection retains all
+seen names in each open object; a huge object can consume substantial memory even
+in event mode. Large aggregate documents should stream bounded records or structure;
+a huge individual POJO/string/number is still one materialization unit.
+
+Native-reference benchmarks must state equivalent configuration and output
+ownership. A native loop without demand, cancellation, budgets and framing is
+not a measure of wholly removable facade overhead. Short-record reactive writes
+and token delivery remain meaningful costs. Avoid extra tree/export/conversion
+steps, share mappers/types, and measure actual workloads before changing transports.
 
 ## Implementation and validation
 
-Framing and selection live in `json-facade-api/src/main/java/org/jetlinks/json/internal/AbstractReadSession.java`; each Provider's `Jackson2Session` / `Jackson3Session` owns native token buffering and binding. Internal token metadata is session-local and reused; public events remain immutable and independently retainable. Native session/writer hot paths call the engine directly and share exception classification through each Provider's support class. `JsonMapper.compactWriter` selects operation-local output configuration and suppresses implicit root separators. Provider tree serializers live separately from exact-class user adapters, so tree-interface inheritance does not widen user adapter matching. `OperationResource` owns serial operation/cancellation cleanup; `ReadSessionResource` and `WriteSessionResource` release native state exactly once. Each resource reuses a drain publisher across sequential chunks/records/events; every inner subscription has independent demand and completion state. `concatMap` with zero prefetch preserves serial advancement, and deferred start/EOF/finish operations preserve subscription timing. `SegmentedJsonOutput` owns byte budgets and segment transfer; `DocumentState` validates structural output.
+Java 17.0.18 and 21.0.10 each pass 233 tests with no failures, errors or skips.
+Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
+module's 80% branch-coverage gate pass. Tests cover both real Providers, configured
+extensions, tree isolation/locations, IO failures, demand, cancellation and transport
+ownership. The [CI matrix](../.github/workflows/verify.yml) also runs small-chunk,
+closed-owner, tree-retention and pooled-buffer regressions.
 
-`mvn -o -B -ntp verify` runs warning-as-error compilation, Checkstyle, SpotBugs, both real-engine TCKs, Reactor tests and the aggregate coverage gate. Production modules each require at least 80% branch coverage. CI uses Java 17/21, the smaller bounded-heap streaming matrix and a separate closed-resource regression.
+Large-document evidence covers at least 1 GiB aggregate documents under a 128 MiB
+heap, with bounded records/tokens; pooled transport runs also constrain direct
+memory and require zero pinned bytes at completion. These results do not establish
+fixed memory for arbitrary individual values or production concurrency.
 
-Reproducible opt-in measurements (after the build):
+JMH covers stream sessions, events, tree access, configured native/facade reads,
+independently owned writes and Netty transports. Current allocation evidence
+supports fused Pointer access, direct receiver delivery and Jackson 3 native
+byte[] delegation. The Class convenience comparison adds about 16–28 B per
+one-record operation and about 16 B per 1000-record operation; no per-record type
+wrapping was observed. Timing results do not establish universal CPU savings.
+
+After `mvn -B -ntp verify`, run optional checks from the repository root:
 
 ```sh
-# Full 1 GiB logical documents, both engines and adapted Jackson 2, 128/256 MiB heaps.
+python3 scripts/run-tree-access-stress.py
 python3 scripts/run-streaming-stress.py
-# Select the native snapshot path only.
-python3 scripts/run-streaming-stress.py --engines 2-adapted --heaps 128
-# Chunk-boundary/slow-demand coverage with smaller logical documents.
-python3 scripts/run-streaming-stress.py --mib 16 --heaps 128 --chunks 64 65536
-# Retain closed wrappers; their former buffers exceed the 64 MiB heap / 32 MiB direct-memory limits.
 python3 scripts/run-resource-release-stress.py
-# Optional allocation/GC recording, kept outside ordinary CI.
-python3 scripts/run-streaming-stress.py --heaps 128 --modes array-write document-copy --jfr-dir target/streaming-jfr
-# JMH throughput and cumulative allocations; optional JMH dependencies resolved by Maven.
+python3 scripts/run-netty-stress.py
+python3 scripts/run-netty-stress.py --release-only
+python3 scripts/run-databuffer-stress.py
+python3 scripts/run-databuffer-stress.py --release-only
 python3 scripts/run-streaming-benchmarks.py
+python3 scripts/run-streaming-benchmarks.py --tree
+python3 scripts/run-streaming-benchmarks.py --provider-read
+python3 scripts/run-streaming-benchmarks.py --published-write
+python3 scripts/run-streaming-benchmarks.py --netty
 ```
 
-The stress harness lazily generates source bytes, requests one record/chunk at a time and validates input records without collecting them. Output is independently checked with a native nonblocking parser, including trailing metadata. It reports bytes, records, elapsed time, first-signal latency, cumulative thread allocation, GC time, current heap and the sum of heap-pool peaks. Pool peaks need not occur simultaneously and are not a precise process RSS measurement. JMH uses separate forks and GC profiling; its microbenchmarks do not imply production/network throughput.
-
-`ResourceReleaseStress` retains 64 closed owners per fork while their former buffers exceed a 64 MiB heap or 32 MiB direct-memory limit. Both engines and the adapted Jackson 2 configuration cover heap/direct input sessions, standalone readers/writers, malformed input, failing output flush and discarded segmented queues. The fixture uses allocation pressure and reachability fences, without explicit GC or private-field inspection. It verifies bounded retention even when callers keep a closed facade reachable.
-
-The quality gate targets Java 17 and 21. Spring tests cover actual Boot auto-configuration/customization, native post-processing, early business initialization, unique/primary selection, host override, opt-out, startup failure, prototype rejection, circular dependency and ClassLoader-lifetime behavior. A separate process verifies plain Spring without Boot, Reactor or Netty. DataBuffer tests additionally cover both Providers, buffer/iterator ownership, callback cancellation and actual HTTP streaming. Native snapshot tests cover inclusion filters, modules/mixins, independent source configuration, limits, neutral trees and IO ownership. Shared-instance regressions retain concurrent publication, failure/reentry, explicit defaults and named isolation coverage.
-
-The adapted Jackson 2 path passes all six modes with at least 1 GiB per document under a 128 MiB heap, plus all eight closed-resource forks, on Java 17 and 21. Its 64 B/64 KiB chunk-boundary matrix also passes with 16 MiB documents. Prior validation of unchanged ordinary Provider streaming/resource paths covers both engines, all six GiB modes with 128/256 MiB heaps, and the same input chunk boundaries. Historical JFR recordings of 1 GiB array output and structured document copying under a 128 MiB heap show approximately 3.8–6.6 MiB live after GC. The linked PR records source versions, measured allocation comparisons and delivery evidence; these historical measurements do not assert throughput for Spring applications.
-
-Review and CI entry: [jetlinks/json-facade#1](https://github.com/jetlinks/json-facade/pull/1).
-
-## Remaining boundaries
-
-Published public native JSON types, Jackson annotations/mixins and custom engine modules need explicit migration. A facade cannot transparently make these engine-neutral. CBOR, Smile and XML are separate formats and remain with their native integrations. There is no automatic engine fallback, implicit broken-record skipping or replacement of framework JSON configuration.
+Stress drivers generate and validate data without collecting a whole document.
+`JSON_STRESS_JAVA` selects their JVM. Benchmark options pass through to JMH,
+including forks, warmup, measurement, heap and GC profiling. Compare allocation,
+live heap, pinned/reserved memory and RSS separately. See the
+[PR](https://github.com/jetlinks/json-facade/pull/1) for delivery evidence.

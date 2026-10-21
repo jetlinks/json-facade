@@ -6,6 +6,7 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.jetlinks.json.Json;
+import org.jetlinks.json.JsonEvent;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
 import org.jetlinks.json.JsonPointer;
@@ -35,7 +36,7 @@ public class StreamBenchmark {
     @Param({"2", "3"}) public String engine;
     @Param({"readSession8k", "readBytes8k", "readBuffers8k", "readBytes64", "readNdjson8k",
             "readArray8k", "readPointer8k", "writeNdjson31", "writeNdjson4k", "writeNdjson1m",
-            "writeArray31", "writeArray4k", "writeArray1m"})
+            "writeArray31", "writeArray4k", "writeArray1m", "writeNumberTokens"})
     public String scenario;
     public JsonMapper mapper;
     public JsonStreamMapper streams;
@@ -45,6 +46,7 @@ public class StreamBenchmark {
     public byte[][] chunks;
     public ByteBuffer[] buffers;
     public Map<String, String> value;
+    public Flux<JsonEvent> numberEvents;
     public int records;
     public long recordBytes;
 
@@ -56,7 +58,15 @@ public class StreamBenchmark {
         records = 1000;
         readOptions = JsonReadOptions.of(JsonReadOptions.Mode.ROOT_VALUES);
         writeOptions = JsonWriteOptions.of(JsonWriteOptions.Format.NDJSON);
-        if (scenario.startsWith("read")) {
+        if (scenario.equals("writeNumberTokens")) {
+            String number = "-12345.6700e+8";
+            JsonEvent[] events = new JsonEvent[records];
+            Arrays.fill(events, JsonEvent.number(number));
+            numberEvents = Flux.concat(Flux.just(JsonEvent.START_ARRAY), Flux.fromArray(events),
+                    Flux.just(JsonEvent.END_ARRAY));
+            recordBytes = number.length();
+            writeOptions = JsonWriteOptions.of(JsonWriteOptions.Format.SINGLE_VALUE);
+        } else if (scenario.startsWith("read")) {
             String record = "{\"id\":123,\"name\":\"test\",\"active\":true,\"items\":[1,2,3]}";
             String document;
             if (scenario.equals("readArray8k") || scenario.equals("readPointer8k")) {
@@ -112,10 +122,14 @@ public class StreamBenchmark {
             return counter.sum;
         }
         Counter<byte[]> counter = new Counter<>(true);
-        streams.writeBytes(Flux.range(0, records).map(i -> value), writeOptions).subscribe(counter);
+        if (numberEvents != null) {
+            streams.writeEvents(numberEvents, writeOptions).subscribe(counter);
+        } else {
+            streams.writeBytes(Flux.range(0, records).map(i -> value), writeOptions).subscribe(counter);
+        }
         counter.verify(-1);
         long expected = records * (recordBytes + 1)
-                + (writeOptions.format() == JsonWriteOptions.Format.ARRAY ? 1 : 0);
+                + (numberEvents != null || writeOptions.format() == JsonWriteOptions.Format.ARRAY ? 1 : 0);
         if (counter.sum != expected) {
             throw new AssertionError("Write byte count");
         }
