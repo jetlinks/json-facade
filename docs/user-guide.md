@@ -215,6 +215,21 @@ Object snapshot = root.toJavaValue();
 
 createObject/createArray、put/add/set 和导出/复制会隔离嵌套容器；插入原容器后再修改原容器，不影响目的树。输入须无环且对象键为 String。JsonValue.of(existingNode) 保留节点身份，隔离请用 deepCopy。
 
+已有 Map/List 只需读取时，可借用原容器，省去递归复制：
+
+```java
+java.util.Map<String, Object> source = new java.util.HashMap<>();
+source.put("items", java.util.List.of(java.util.Map.of("count", 3)));
+JsonObject view = mapper.wrap(source);
+int count = view.at(JsonPointer.of("/items/0/count")).asInt();
+JsonArray listView = mapper.wrap(java.util.List.of(1, 2, 3));
+JsonObject editable = view.deepCopy();
+```
+
+wrap 创建只分配根视图，不遍历数据；子节点按访问包装，转换与序列化复用所属 Provider。根及嵌套容器的 put/remove/add/set 均抛 UnsupportedOperationException；缺失/null 的写入仍按原有缺失/null 契约失败。外部修改源可被观察；借用不是冻结或并发快照，访问、绑定及复制期间须保持整个源稳定。已取得的子视图仍指向原子容器，祖先替换后须重新定位。
+
+借用源须为无环的 String 键 Map、List、null、String、Boolean 或下文列出的精确 JDK 数字。wrap 不扫描校验整图；访问到不支持的叶值时失败。嵌套 Collection（非 List）、Java 数组、JsonValue 和 POJO 请先用 createXX/toTree 转换。toJavaValue 仍递归导出独立快照，deepCopy 返回保留 mapper 配置的独立可变树；需要对外隔离时显式选择它们。
+
 结构工厂接受 JSON 标量、Map、Collection 与 Java 数组，不绑定任意 POJO；使用 mapper.toTree(bean) 应用命名、日期和适配器。结构 byte[] 是数字数组，原生绑定通常为 Base64。结构数字只接受精确的 JDK Byte/Short/Integer/Long/Float/Double/BigInteger/BigDecimal，拒绝可变 Number、自定义 Number 和大数子类；这些对象可通过 toTree 绑定。
 
 ### 访问、转换与位置

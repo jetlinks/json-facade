@@ -111,6 +111,24 @@ Binding results still require defensive copying: custom native deserializers
 may return shared containers. Synchronous binding may borrow the internal JDK
 tree but must not expose or retain its backing graph.
 
+`JsonMapper.wrap(Map/List)` borrows existing JSON data as read-only views.
+Creation takes O(1) time/space without scanning or copying the source; nested
+views are created on access and retain the same mapper. All actual-container
+writes, including nested writes through get/typed views/Pointer, throw
+UnsupportedOperationException. Absent writes retain their missing/null errors.
+`deepCopy` creates an independent mutable tree; `toJavaValue` exports an
+independent snapshot. Conversion and serialization reuse configured Provider
+binding and may allocate independently of wrapping.
+
+Borrowed sources must be acyclic String-keyed Maps, Lists and the structural
+scalars above, including null. Other Collections, Java arrays, JsonValue nodes
+and POJOs require structural factories or `toTree` first. Wrapping is not graph
+validation: unsupported leaves fail when exposed as views, and unvisited data
+is not checked. External changes are observable; callers must keep the entire
+source stable during access, binding, export and copying. Views add no
+synchronization or snapshot consistency. Cached child views still point to the
+original child storage after external ancestor replacement.
+
 Missing and JSON null are distinct non-null views; inspect `isMissing/isNull`,
 not singleton identity. Missing export fails. RFC 6901 pointers support escaped
 `/` and `~`; readable array indices use canonical decimal notation.
@@ -140,7 +158,8 @@ assertion failures have VALIDATION kind. Failures expose kind, reason, message,
 RFC 6901 pointer, display path and original cause. Provider paths are extracted
 from structured native errors and prefixed with the access path.
 
-Trees are mutable and not thread-safe. There is no public field iterator,
+Owned trees are mutable and not thread-safe; borrowed views do not freeze their
+source or make concurrent source mutation safe. There is no public field iterator,
 array remove/insert/clear API or structural node equality contract. Exporting a
 Map/List snapshot copies data; large traversal should use cursors or events.
 
@@ -284,10 +303,10 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 249 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 255 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
 module's 80% branch-coverage gate pass. Tests cover both real Providers, configured
-extensions, tree isolation/locations, IO failures, demand, cancellation and transport
+extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
 ownership. The [CI matrix](../.github/workflows/verify.yml) also runs small-chunk,
 closed-owner, tree-retention and pooled-buffer regressions.
 
@@ -302,6 +321,16 @@ supports fused Pointer access, direct receiver delivery and Jackson 3 native
 byte[] delegation. The Class convenience comparison adds about 16–28 B per
 one-record operation and about 16 B per 1000-record operation; no per-record type
 wrapping was observed. Timing results do not establish universal CPU savings.
+
+Borrowed-tree JMH uses Java 21, a 512 MiB heap, GC profiling, three forks, three
+300 ms warmups and four 300 ms measurements. Across both Providers and one/1000
+nested elements, root `wrap(Map/List)` allocates 32 B/op (about 5–7 ns/op),
+independent of source size in this fixture. Copying 1000 elements allocates about
+260–271 KB/op and takes 23–25 µs/op. Borrowed and copied fused access both
+allocate 88 B/op on the measured paths. A before/after depth-4 mixed-path check
+keeps chain/Pointer allocation at 224/88 B/op without observed timing regression.
+These results support constant-cost root wrapping, not allocation-free access
+or conversion; Provider binding, export and explicit deep copies have their own costs.
 
 The root-array iterator comparison uses identical binding, count/sum checks and
 array/EOF validation against the existing cursor. Java 21, 256 MiB heap, GC
@@ -333,6 +362,7 @@ python3 scripts/run-databuffer-stress.py
 python3 scripts/run-databuffer-stress.py --release-only
 python3 scripts/run-streaming-benchmarks.py
 python3 scripts/run-streaming-benchmarks.py --tree
+python3 scripts/run-streaming-benchmarks.py --tree-wrap
 python3 scripts/run-streaming-benchmarks.py --iterator
 python3 scripts/run-streaming-benchmarks.py --provider-read
 python3 scripts/run-streaming-benchmarks.py --published-write

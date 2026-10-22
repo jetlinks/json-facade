@@ -19,14 +19,16 @@ public final class JsonTreeAccessStress {
 
     public static void main(String[] args) {
         JsonMapper mapper = Json.builder().provider(args[0]).build();
+        boolean borrowed = args.length > 1 && args[1].equals("borrowed");
         List<JsonValue> leaves = new ArrayList<>();
         List<JsonValue> missing = new ArrayList<>();
         List<JsonValue> foreign = new ArrayList<>();
         List<JsonException> failures = new ArrayList<>();
         for (int i = 0; i < 512; i++) {
-            JsonValue root = mapper.createObject(Map.of("parent",
-                    Map.of("payload", "x".repeat(1024 * 1024), "leaf", "12")));
-            leaves.add(root.getObject("parent").get("leaf"));
+            Map<String, Object> source = Map.of("payload", "x".repeat(1024 * 1024),
+                    "parent", Map.of("leaf", "12"));
+            JsonValue root = borrowed ? mapper.wrap(source) : mapper.createObject(source);
+            leaves.add(root.getObject("parent"));
             JsonValue absent = root.get("parent").get("missing").getArray("items").get(0);
             missing.add(absent);
             foreign.add(JsonValues.arrayView(new ForeignAbsent(root)).get(0));
@@ -38,14 +40,15 @@ public final class JsonTreeAccessStress {
             }
         }
         for (int i = 0; i < leaves.size(); i++) {
-            if (leaves.get(i).asInt() != 12 || !missing.get(i).isMissing()
+            if (leaves.get(i).get("leaf").asInt() != 12 || !missing.get(i).isMissing()
                     || !foreign.get(i).pointer().toString().equals("/external/items/0")
                     || !foreign.get(i).displayPath().equals("external.items[0]")
                     || !failures.get(i).pointer().toString().equals("/parent/missing/items/0")) {
                 throw new IllegalStateException("Retained access view changed");
             }
         }
-        System.out.println("{\"engine\":\"" + args[0] + "\",\"allocatedAncestorMiB\":512,"
+        System.out.println("{\"engine\":\"" + args[0] + "\",\"borrowed\":" + borrowed
+                + ",\"allocatedAncestorMiB\":512,"
                 + "\"retainedViews\":1536,\"retainedErrors\":512,\"heapBytes\":"
                 + Runtime.getRuntime().maxMemory() + "}");
     }

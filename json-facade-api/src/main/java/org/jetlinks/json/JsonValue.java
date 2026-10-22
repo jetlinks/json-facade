@@ -3,7 +3,8 @@ package org.jetlinks.json;
 import org.jetlinks.json.internal.JsonArrayIndex;
 import org.jetlinks.json.internal.JsonValues;
 
-/** Engine-neutral JSON value. Containers are mutable and operation-local; NULL differs from MISSING.
+/** Engine-neutral JSON value. Factory containers are mutable; borrowed/absent views reject writes.
+ * Views add no synchronization; NULL differs from MISSING.
  * Java-value export and deepCopy isolate nested containers. Use a configured mapper for POJO mapping.
  * @since 1.0.0
  */

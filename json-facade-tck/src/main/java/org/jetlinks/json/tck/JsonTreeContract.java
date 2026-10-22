@@ -7,6 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -42,6 +43,97 @@ public abstract class JsonTreeContract {
     private static final JsonType<List<TreeHolder>> HOLDERS = new JsonType<>() { };
     private static final JsonType<List<JsonObject>> OBJECTS = new JsonType<>() { };
     protected abstract JsonMapper mapper(JsonOptions options, JsonModule... modules);
+
+    @Test
+    void borrowedViewsObserveSourceChangesAndRejectNestedWrites() {
+        JsonMapper json = mapper(JsonOptions.DEFAULT);
+        Map<String, Object> row = new LinkedHashMap<>(Map.of("n", "1"));
+        List<Object> rows = new ArrayList<>(List.of(row));
+        Map<String, Object> source = new LinkedHashMap<>();
+        source.put("a/b~c", rows);
+        source.put("null", null);
+        JsonObject view = json.wrap(source);
+        JsonArray array = json.wrap(rows);
+        for (JsonValue object : List.of(view, view.at(JsonPointer.of("")), array.getObject(0),
+                view.getArray("a/b~c").get(0).asObject(),
+                view.at(JsonPointer.of("/a~1b~0c/0")).asObject())) {
+            assertThrows(UnsupportedOperationException.class, () -> object.put("x", 1));
+            assertThrows(UnsupportedOperationException.class, () -> object.remove("n"));
+        }
+        for (JsonValue list : List.of(array, view.get("a/b~c").asArray(),
+                view.at(JsonPointer.of("/a~1b~0c")), json.wrap(List.of(rows)).getArray(0),
+                json.wrap(List.of(List.of(rows))).at(JsonPointer.of("/0/0")))) {
+            assertThrows(UnsupportedOperationException.class, () -> list.add(1));
+            assertThrows(UnsupportedOperationException.class, () -> list.set(0, 1));
+        }
+        assertEquals(Map.of("n", "1"), row);
+        assertEquals(1, rows.size());
+        assertFalse(source.containsKey("x"));
+        row.put("n", "2");
+        rows.add(Map.of("n", "3"));
+        source.put("later", true);
+        assertEquals(2, array.size());
+        assertEquals(2, view.at(JsonPointer.of("/a~1b~0c/0/n")).asInt());
+        assertEquals(3, array.getObject(1).get("n").asInt());
+        assertTrue(view.get("later").asBoolean());
+        JsonValue located = view.at(JsonPointer.of("/a~1b~0c/0/n"));
+        assertEquals("/a~1b~0c/0/n", located.pointer().toString());
+        assertEquals("[\"a/b~c\"][0].n", located.displayPath());
+        assertTrue(view.getArray("missing").get(0).isMissing());
+        assertTrue(view.getObject("null").isNull());
+        assertThrows(JsonException.class, () -> view.getObject("missing").put("x", 1));
+        assertThrows(JsonException.class, () -> view.getArray("null").add(1));
+        source.put("a/b~c", List.of());
+        assertEquals(0, view.getArray("a/b~c").size());
+        assertEquals(2, array.size());
+    }
+
+    @Test
+    void borrowedCopiesExportsAndProviderConversionsDoNotExposeSourceStorage() {
+        JsonMapper json = mapper(JsonOptions.DEFAULT);
+        Map<String, Object> row = new LinkedHashMap<>(Map.of("n", 1));
+        List<Object> rows = new ArrayList<>(List.of(row));
+        JsonObject view = json.wrap(Map.of("rows", rows));
+        JsonObject copy = view.deepCopy();
+        JsonArray arrayCopy = view.getArray("rows").deepCopy();
+        Map<?, ?> exported = (Map<?, ?>) view.toJavaValue();
+        Map<?, ?> converted = view.as(Map.class);
+        JsonObject rebound = view.as(JsonObject.class);
+        assertEquals(json.write(Map.of("rows", rows)), json.write(view));
+        assertEquals(json.write(rows), json.write(json.wrap(rows)));
+        copy.getArray("rows").getObject(0).put("n", 9);
+        arrayCopy.set(0, Map.of("n", 8)).add(2);
+        rebound.getArray("rows").getObject(0).put("n", 7);
+        assertEquals(1, row.get("n"));
+        row.put("n", 3);
+        assertEquals(3, view.at(JsonPointer.of("/rows/0/n")).asInt());
+        assertEquals(9, copy.at(JsonPointer.of("/rows/0/n")).asInt());
+        assertEquals(8, arrayCopy.getObject(0).get("n").asInt());
+        assertEquals(Map.of("rows", List.of(Map.of("n", 1))), exported);
+        assertEquals(exported, converted);
+        assertEquals("/n", view.getArray("rows").getObject(0).deepCopy().get("n").pointer().toString());
+    }
+
+    @Test
+    void wrappingDoesNotVisitSourceContentsAndRejectsUnsupportedExposedLeaves() {
+        JsonMapper json = mapper(JsonOptions.DEFAULT);
+        assertNotNull(json.wrap(new UnvisitedMap()));
+        assertNotNull(json.wrap(new UnvisitedList()));
+        assertThrows(NullPointerException.class, () -> json.wrap((Map<String, ?>) null));
+        assertThrows(NullPointerException.class, () -> json.wrap((List<?>) null));
+        for (Object invalid : List.of(new AtomicInteger(1), new Object(), new int[]{1},
+                java.util.Set.of(1), json.createObject())) {
+            JsonObject object = json.wrap(Map.of("bad", invalid));
+            assertThrows(IllegalArgumentException.class, () -> object.get("bad"));
+            assertThrows(IllegalArgumentException.class, () -> object.at(JsonPointer.of("/bad")));
+            assertThrows(IllegalArgumentException.class, () -> json.wrap(List.of(invalid)).get(0));
+        }
+        JsonArray scalars = json.wrap(Arrays.asList(null, true, "s", (byte) 1, (short) 2,
+                3, 4L, 5F, 6D, BigInteger.TEN, BigDecimal.TEN));
+        for (int i = 0; i < scalars.size(); i++) {
+            assertEquals(((List<?>) scalars.toJavaValue()).get(i), scalars.get(i).toJavaValue());
+        }
+    }
 
     @Test
     void structuralFactoriesRejectMutableNumbersWhileBindingNormalizesThem() {
@@ -214,7 +306,8 @@ public abstract class JsonTreeContract {
                 first.readTree(input), first.toTree(Map.of("n", "1")),
                 first.read(input, JsonValue.class), first.read(input, JsonObject.class),
                 first.convert(Map.of("n", "1"), JsonType.of(JsonObject.class)),
-                first.createArray(List.of(Map.of("n", "1"))).get(0))) {
+                first.createArray(List.of(Map.of("n", "1"))).get(0),
+                first.wrap(Map.of("n", "1")), first.wrap(List.of(Map.of("n", "1"))).get(0))) {
             assertEquals(11, tree.get("n").asInteger());
             assertEquals(11, tree.deepCopy().get("n").asInteger());
         }
@@ -325,6 +418,25 @@ public abstract class JsonTreeContract {
                 return;
             }
             records.add(result.value());
+        }
+    }
+
+    private static final class UnvisitedMap extends java.util.AbstractMap<String, Object> {
+        @Override
+        public java.util.Set<Entry<String, Object>> entrySet() {
+            throw new AssertionError("Wrapping must not enumerate source entries");
+        }
+    }
+
+    private static final class UnvisitedList extends java.util.AbstractList<Object> {
+        @Override
+        public Object get(int index) {
+            throw new AssertionError("Wrapping must not read source elements");
+        }
+
+        @Override
+        public int size() {
+            return 1;
         }
     }
 

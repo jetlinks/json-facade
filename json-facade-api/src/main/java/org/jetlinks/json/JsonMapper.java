@@ -116,6 +116,36 @@ public interface JsonMapper {
         return result;
     }
 
+    /** Borrow a Map as a read-only JSON object without traversing or copying its contents.
+     * The entire source must be acyclic JSON data: String-keyed Maps, Lists, null, String,
+     * Boolean and the exact JDK numeric classes accepted by structural factories.
+     * Other Collections, Java arrays, JsonValue nodes and POJOs require createObject/toTree.
+     * This is not graph validation; unsupported leaves fail when exposed as views.
+     * External changes remain visible. Keep the source stable during access, binding and copying;
+     * the view adds no synchronization. Child views retain their original child storage.
+     * @param values caller-owned source, never null
+     * @return configured borrowed view; container writes, including nested writes, throw
+     * UnsupportedOperationException. deepCopy returns an independent mutable tree and
+     * toJavaValue exports an independent snapshot, both recursively copying on request.
+     * @since 1.0.0
+     * @see #wrap(java.util.List)
+     */
+    default JsonObject wrap(java.util.Map<String, ?> values) {
+        return org.jetlinks.json.internal.JsonValues.borrowObject(values, this);
+    }
+
+    /** Borrow a List as a read-only JSON array under the same source and ownership rules as wrap(Map).
+     * No element is visited at creation. Nested containers are wrapped only when accessed;
+     * Provider conversion and serialization still use this mapper's configuration.
+     * @param values caller-owned source, never null
+     * @return configured borrowed view; use deepCopy for an independent mutable tree
+     * @since 1.0.0
+     * @see #wrap(java.util.Map)
+     */
+    default JsonArray wrap(java.util.List<?> values) {
+        return org.jetlinks.json.internal.JsonValues.borrowArray(values, this);
+    }
+
     default byte[] writeBytes(Object value) {
         java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
         write(value, output);

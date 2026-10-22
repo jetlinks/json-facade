@@ -17,10 +17,11 @@ def main():
     args = parser.parse_args()
     classpath = STREAM["classpath"]() + os.pathsep + str(ROOT / "json-facade-tck" / "target" / "classes")
     for engine in args.engines:
-        subprocess.run([
-            os.environ.get("JSON_STRESS_JAVA", "java"), "-Xmx64m", "-cp", classpath,
-            "org.jetlinks.json.tck.JsonTreeAccessStress", engine,
-        ], check=True, cwd=ROOT)
+        for storage in ("owned", "borrowed"):
+            subprocess.run([
+                os.environ.get("JSON_STRESS_JAVA", "java"), "-Xmx64m", "-cp", classpath,
+                "org.jetlinks.json.tck.JsonTreeAccessStress", engine, storage,
+            ], check=True, cwd=ROOT)
 
 
 if __name__ == "__main__":

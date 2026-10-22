@@ -53,7 +53,7 @@ public final class JsonValues {
     }
 
     public static JsonObject object(JsonMapper mapper) {
-        return new ObjectValue(new LinkedHashMap<>(), mapper, JsonPath.ROOT);
+        return new ObjectValue(new LinkedHashMap<>(), mapper, JsonPath.ROOT, false);
     }
 
     public static JsonArray array() {
@@ -61,7 +61,17 @@ public final class JsonValues {
     }
 
     public static JsonArray array(JsonMapper mapper) {
-        return new ArrayValue(new ArrayList<>(), mapper, JsonPath.ROOT);
+        return new ArrayValue(new ArrayList<>(), mapper, JsonPath.ROOT, false);
+    }
+
+    /** Borrow JSON-only storage without walking it; nested access preserves read-only ownership. */
+    public static JsonObject borrowObject(Map<String, ?> values, JsonMapper mapper) {
+        return new ObjectValue(Objects.requireNonNull(values, "values"), mapper, JsonPath.ROOT, true);
+    }
+
+    /** List counterpart of borrowObject; copying remains explicit at export/deepCopy boundaries. */
+    public static JsonArray borrowArray(List<?> values, JsonMapper mapper) {
+        return new ArrayValue(Objects.requireNonNull(values, "values"), mapper, JsonPath.ROOT, true);
     }
 
     public static JsonValue of(Object value) {
@@ -162,16 +172,20 @@ public final class JsonValues {
     }
 
     private static JsonValue wrap(Object value, JsonMapper mapper, JsonPath path) {
+        return wrap(value, mapper, path, false);
+    }
+
+    private static JsonValue wrap(Object value, JsonMapper mapper, JsonPath path, boolean borrowed) {
         if (value == null && mapper == null && path == JsonPath.ROOT) {
             return JsonValue.NULL;
         }
         if (value instanceof Map<?, ?> map) {
-            return new ObjectValue(map, mapper, path);
+            return new ObjectValue(map, mapper, path, borrowed);
         }
         if (value instanceof List<?> list) {
-            return new ArrayValue(list, mapper, path);
+            return new ArrayValue(list, mapper, path, borrowed);
         }
-        return new BaseValue(value, false, mapper, path);
+        return new BaseValue(borrowed ? scalar(value) : value, false, mapper, path);
     }
 
     private static Object copy(Object value) {
@@ -187,6 +201,10 @@ public final class JsonValues {
         if (value != null && value.getClass().isArray()) {
             return copyArray(value);
         }
+        return scalar(value);
+    }
+
+    private static Object scalar(Object value) {
         if (value instanceof Number) {
             if (!IMMUTABLE_NUMBERS.contains(value.getClass())) {
                 throw new IllegalArgumentException("Use JsonMapper.toTree for custom or mutable Numbers");
@@ -233,12 +251,18 @@ public final class JsonValues {
         private final boolean missing;
         final JsonMapper mapper;
         final JsonPath path;
+        final boolean borrowed;
 
         BaseValue(Object value, boolean missing, JsonMapper mapper, JsonPath path) {
+            this(value, missing, mapper, path, false);
+        }
+
+        BaseValue(Object value, boolean missing, JsonMapper mapper, JsonPath path, boolean borrowed) {
             this.value = value;
             this.missing = missing;
             this.mapper = mapper;
             this.path = path;
+            this.borrowed = borrowed;
         }
 
         BaseValue(JsonValue absent) {
@@ -250,6 +274,12 @@ public final class JsonValues {
         void checkPresent() {
             if (missing) {
                 throw new IllegalStateException("Missing JSON is not a value");
+            }
+        }
+
+        void checkWritable() {
+            if (borrowed) {
+                throw new UnsupportedOperationException("Borrowed JSON views are read-only; use deepCopy to edit");
             }
         }
 
@@ -334,7 +364,7 @@ public final class JsonValues {
                 array = current instanceof List<?>;
             }
             JsonPath selected = path.select(segments, indices);
-            return absent ? new BaseValue(null, true, mapper, selected) : wrap(current, mapper, selected);
+            return absent ? new BaseValue(null, true, mapper, selected) : wrap(current, mapper, selected, borrowed);
         }
 
         @Override
@@ -355,8 +385,8 @@ public final class JsonValues {
         private final Map<String, Object> values;
 
         @SuppressWarnings("unchecked")
-        ObjectValue(Map<?, ?> values, JsonMapper mapper, JsonPath path) {
-            super(values, false, mapper, path);
+        ObjectValue(Map<?, ?> values, JsonMapper mapper, JsonPath path, boolean borrowed) {
+            super(values, false, mapper, path, borrowed);
             this.values = (Map<String, Object>) values;
         }
 
@@ -364,18 +394,20 @@ public final class JsonValues {
         public JsonValue get(String name) {
             JsonPath child = path.field(name);
             Object value = values.get(name);
-            return value != null || values.containsKey(name) ? wrap(value, mapper, child)
+            return value != null || values.containsKey(name) ? wrap(value, mapper, child, borrowed)
                     : new BaseValue(null, true, mapper, child);
         }
 
         @Override
         public JsonObject put(String name, Object value) {
+            checkWritable();
             values.put(Objects.requireNonNull(name, "name"), copy(value));
             return this;
         }
 
         @Override
         public JsonObject remove(String name) {
+            checkWritable();
             values.remove(name);
             return this;
         }
@@ -395,26 +427,28 @@ public final class JsonValues {
         private final List<Object> values;
 
         @SuppressWarnings("unchecked")
-        ArrayValue(List<?> values, JsonMapper mapper, JsonPath path) {
-            super(values, false, mapper, path);
+        ArrayValue(List<?> values, JsonMapper mapper, JsonPath path, boolean borrowed) {
+            super(values, false, mapper, path, borrowed);
             this.values = (List<Object>) values;
         }
 
         @Override
         public JsonValue get(int index) {
             JsonPath child = path.index(index);
-            return index >= 0 && index < values.size() ? wrap(values.get(index), mapper, child)
+            return index >= 0 && index < values.size() ? wrap(values.get(index), mapper, child, borrowed)
                     : new BaseValue(null, true, mapper, child);
         }
 
         @Override
         public JsonArray add(Object value) {
+            checkWritable();
             values.add(copy(value));
             return this;
         }
 
         @Override
         public JsonArray set(int index, Object value) {
+            checkWritable();
             values.set(index, copy(value));
             return this;
         }
