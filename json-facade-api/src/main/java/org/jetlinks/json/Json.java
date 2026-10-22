@@ -2,9 +2,11 @@ package org.jetlinks.json;
 
 import java.util.function.Supplier;
 
-/** Entry point for immutable mapper construction and application-lifetime shared instances.
- * Global registration accepts fully configured, thread-safe implementations and never replaces them.
- * References live with this class's ClassLoader; short-lived owners should inject their own instances.
+/**
+ * JSON 映射器的构建入口和应用级共享实例注册表。
+ * <p>全局仅接受已配置、可并发使用的实例，注册后不可替换、移除或重置，也不自动关闭。
+ * 引用与本类的 ClassLoader 同寿命；短生命周期组件应自行持有或注入实例。
+ *
  * @since 1.0.0
  * @see JsonMapperBuilder
  */
@@ -14,14 +16,18 @@ public final class Json {
     private Json() {
     }
 
+    /**
+     * 创建独立构建器；不修改已发布实例或全局配置。
+     */
     public static JsonMapperBuilder builder() {
         return new JsonMapperBuilder();
     }
 
-    /** Return the shared default, lazily discovering one Provider unless explicitly registered.
-     * Configure and register before first use to choose options, modules or a custom implementation.
-     * Failed construction publishes nothing and propagates its original failure.
-     * @return the stable, thread-safe default mapper
+    /**
+     * 获取共享默认实例；未显式注册时，首次调用自动发现唯一 Provider 并构建。
+     * 需要定制策略、模块或实现时，应在首次使用前注册；构建失败不发布结果并传播原异常。
+     *
+     * @return 发布后身份固定、可并发共享的默认映射器
      * @since 1.0.0
      * @see #registerGlobal(JsonMapper)
      */
@@ -29,11 +35,12 @@ public final class Json {
         return GLOBALS.mapper();
     }
 
-    /** Look up an explicitly registered, case-sensitive application configuration name.
-     * Unknown names fail; they never create an instance or fall back to the default.
-     * @param scope nonblank name without leading/trailing whitespace, not a request or tenant ID
-     * @return the registered mapper
-     * @throws JsonException with CONFIGURATION kind when the name is not registered
+    /**
+     * 查找显式注册的应用配置，名称区分大小写；未知名称失败，不创建实例或回退默认值。
+     *
+     * @param scope 无首尾空白的非空名称，不应使用请求 ID 或租户 ID
+     * @return 已注册的映射器
+     * @throws JsonException 名称未注册时，类别为 {@code CONFIGURATION}
      * @since 1.0.0
      * @see #registerGlobal(String, JsonMapper)
      */
@@ -41,10 +48,12 @@ public final class Json {
         return GLOBALS.mapper(scope);
     }
 
-    /** Publish a configured default before its first successful lookup or registration.
-     * The caller finishes configuration first; registration does not build, mutate or close it.
-     * @param mapper thread-safe implementation obeying JsonMapper's operation/resource contracts
-     * @throws JsonException with CONFIGURATION kind if the default is registered, initialized or being resolved
+    /**
+     * 在首次成功获取或注册前发布默认实例；调用方须事先完成配置。
+     * 注册不构建、修改或关闭该实例。
+     *
+     * @param mapper 可并发共享且遵循 {@link JsonMapper} 资源契约的实现
+     * @throws JsonException 默认实例已注册、已初始化或正在解析时，类别为 {@code CONFIGURATION}
      * @since 1.0.0
      * @see JsonMapperBuilder#build()
      */
@@ -52,17 +61,16 @@ public final class Json {
         GLOBALS.register(mapper);
     }
 
-    /** Reserve the default before dependency-injection beans are created, without creating a mapper.
-     * First lookups resolve synchronously outside the publication lock and may call the factory
-     * concurrently. It must support repeatable concurrent resolution of fully configured, thread-safe
-     * mappers; let the owning container control singleton construction. Exactly one result is published,
-     * and successful lookups all return that winner. A failed call propagates its original failure;
-     * if no result was published, later calls may retry the same factory. Reservation remains write-once.
-     * Same-thread recursive lookups fail with CONFIGURATION. The factory reference is released after
-     * publication; no replacement or reset is provided. Published lookups never call the factory.
-     * @param factory application-lifetime resolver; must not recursively access the default or
-     * depend on a single invocation for side effects or resource ownership
-     * @throws JsonException with CONFIGURATION kind if already registered, initialized or being resolved
+    /**
+     * 预留默认实例的延迟解析工厂，适合在依赖注入容器创建 Bean 前注册。
+     * <p>首次获取在发布锁外同步调用工厂，可能并发、重复执行；工厂须安全地解析已完成配置的映射器，
+     * 单例构建应由所属容器管理。仅发布一个结果，所有成功调用返回同一实例。
+     * 失败调用传播原异常；尚无已发布结果时，后续可重试同一工厂，但不能重新注册工厂。
+     * <p>同线程递归获取以 {@code CONFIGURATION} 失败。发布后释放工厂引用，后续获取不再调用工厂。
+     *
+     * @param factory 应用级解析工厂；须支持并发和重复调用，不得递归获取默认实例，
+     * 也不得依赖“只执行一次”来管理副作用或资源
+     * @throws JsonException 已注册、已初始化或正在解析时，类别为 {@code CONFIGURATION}
      * @since 1.0.0
      * @see #registerGlobal(JsonMapper)
      */
@@ -70,12 +78,13 @@ public final class Json {
         GLOBALS.registerFactory(factory);
     }
 
-    /** Publish one configured implementation under a stable application-lifetime name.
-     * Registrations are independent; duplicates fail even for the same instance. No automatic close,
-     * replacement or removal is provided. Short-lived plugins should keep host-owned instances.
-     * @param scope nonblank name without leading/trailing whitespace
-     * @param mapper thread-safe implementation obeying JsonMapper's operation/resource contracts
-     * @throws JsonException with CONFIGURATION kind when the name is already registered
+    /**
+     * 按应用级稳定名称发布实例，各名称独立；同名重复注册即使实例相同也失败。
+     * 不自动关闭、替换或移除；短生命周期插件应使用宿主持有的实例。
+     *
+     * @param scope 无首尾空白的非空名称
+     * @param mapper 可并发共享且遵循 {@link JsonMapper} 资源契约的实现
+     * @throws JsonException 名称已注册时，类别为 {@code CONFIGURATION}
      * @since 1.0.0
      * @see #global(String)
      */
@@ -83,10 +92,11 @@ public final class Json {
         GLOBALS.register(scope, mapper);
     }
 
-    /** Return the same shared default as global().
-     * @return the stable default mapper
+    /**
+     * 获取与 {@link #global()} 相同的共享默认实例。
+     *
+     * @return 发布后身份固定的默认映射器
      * @since 1.0.0
-     * @see #global()
      */
     public static JsonMapper defaultMapper() {
         return global();

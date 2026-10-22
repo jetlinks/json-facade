@@ -1,16 +1,22 @@
 package org.jetlinks.json.spi;
 
-/** Build-time adapter registry; duplicate registrations fail instead of depending on scan order.
+/**
+ * 仅在单次构建中使用的适配器注册表；重复注册失败，不依赖扫描顺序覆盖。
+ * 不得在模块配置回调返回后使用。
+ *
  * @since 1.0.0
+ * @see JsonModule#configure(JsonModuleContext)
  */
 public interface JsonModuleContext {
-    /** Register a thread-safe adapter for exactly type; neither argument may be null.
-     * Called during mapper construction, before concurrent operations become possible.
-     * The registration has no I/O and takes effect only for the mapper being built.
-     * @param type exact class or interface to bind; subclasses/implementations are not implicitly matched
-     * @param adapter thread-safe adapter, called synchronously on the operation thread
-     * @param <T> bound type
-     * @throws org.jetlinks.json.JsonException on duplicate registration; no previous adapter is replaced
+
+    /**
+     * 在映射器构建期为精确类型注册线程安全适配器，两个参数均不可为 null。
+     * 不执行 I/O，仅影响当前构建结果；注册完成后才能并发执行映射操作。
+     *
+     * @param type 精确类或接口，不隐式匹配其子类或实现类
+     * @param adapter 在操作线程同步调用的线程安全适配器
+     * @param <T> 绑定类型
+     * @throws org.jetlinks.json.JsonException 重复注册时抛出，不替换已有适配器
      * @since 1.0.0
      * @see JsonAdapter
      */

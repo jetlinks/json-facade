@@ -3,7 +3,11 @@ package org.jetlinks.json;
 import java.util.ArrayList;
 import java.util.List;
 
-/** RFC 6901 pointer, with decoded immutable segments. An empty pointer selects the root.
+/**
+ * 不可变的 RFC 6901 Pointer，空 Pointer 表示根；不支持 JSONPath 表达式。
+ * 例如 {@code JsonPointer.of("/data/items/0")}；字段中的 {@code ~} 和 {@code /} 须转义。
+ *
+ * @param segments 已解码的非空路径段列表，构造时防御性复制，元素不可为 null
  * @since 1.0.0
  */
 public record JsonPointer(List<String> segments) implements java.io.Serializable {
@@ -12,6 +16,9 @@ public record JsonPointer(List<String> segments) implements java.io.Serializable
         segments = List.copyOf(segments);
     }
 
+    /**
+     * 解析 RFC 6901 字符串；须为空或以 {@code /} 开头，仅接受 {@code ~0} 和 {@code ~1} 转义。
+     */
     public static JsonPointer of(String pointer) {
         if (pointer.isEmpty()) {
             return new JsonPointer(List.of());
@@ -26,7 +33,9 @@ public record JsonPointer(List<String> segments) implements java.io.Serializable
         return new JsonPointer(result);
     }
 
-    /** Canonical RFC 6901 encoding, including escaping of literal '~' and '/'. */
+    /**
+     * 返回规范 RFC 6901 表示，转义字面量 {@code ~} 和 {@code /}。
+     */
     @Override
     public String toString() {
         StringBuilder result = new StringBuilder();

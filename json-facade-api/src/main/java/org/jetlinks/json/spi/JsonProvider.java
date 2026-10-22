@@ -2,29 +2,35 @@ package org.jetlinks.json.spi;
 
 import org.jetlinks.json.JsonMapper;
 
-/** Minimal engine SPI, discovered with ServiceLoader or supplied explicitly.
- * No Spring, Reactor, business types or global mutable mapper registration.
+/**
+ * 通过 ServiceLoader 发现或显式传入的 JSON 引擎 SPI，可跨构建复用。
+ * Provider 负责原生解析、绑定、编码及操作资源；不注册全局实例，不依赖 Spring 或 Reactor。
+ *
  * @since 1.0.0
+ * @see org.jetlinks.json.JsonMapperBuilder
  */
 public interface JsonProvider {
-    /** Return a stable, non-null, unique identity such as jackson2, with no side effects.
-     * Called synchronously during selection; must be safe for concurrent mapper builds.
-     * @return provider identity, never dependent on classpath discovery order
+
+    /**
+     * 返回稳定、非空且唯一的标识，例如 {@code jackson2}，不得有副作用。
+     * 选择阶段同步调用，须支持并发构建；不能依赖类路径发现顺序。
+     *
+     * @return Provider 标识
      * @since 1.0.0
      */
     String id();
-    /** Build a fully configured, immutable and thread-safe mapper.
-     * Must honor all declared facade contracts, including independent incremental sessions.
-     * Unsupported/mismatched configuration fails now; never silently ignore it or fall back.
-     * Called synchronously by the builder; do not retain mutable construction state or perform I/O.
-     * Use JsonConfiguration.configureNative with a fresh native builder, and validate shared options
-     * and ownership constraints after callbacks. Never retain or expose native construction state.
-     * @param configuration non-null immutable options and ordered callbacks; do not mutate their members
-     * @return a non-null, independently configured mapper, safe for concurrent operations
-     * @throws org.jetlinks.json.JsonException if construction or configuration is unsupported
+
+    /**
+     * 同步构建已完成配置、不可变且可并发共享的映射器，不执行外部 I/O。
+     * <p>须遵循全部 facade 契约，包括独立增量会话；不支持或不匹配的配置应立即失败，不得静默忽略或回退。
+     * 使用新建的原生构建器执行 {@link JsonConfiguration#configureNative(Object)}，
+     * 回调结束后校验通用策略与所有权；不得保留或暴露可变构建状态。
+     *
+     * @param configuration 非空、不可变的选项及有序回调，不得修改其成员
+     * @return 非空、配置独立且支持并发操作的映射器
+     * @throws org.jetlinks.json.JsonException 不支持构建或配置时抛出
      * @since 1.0.0
      * @see JsonMapper#readSession
-     * @see JsonConfiguration#configureNative(Object)
      */
     JsonMapper create(JsonConfiguration configuration);
 }

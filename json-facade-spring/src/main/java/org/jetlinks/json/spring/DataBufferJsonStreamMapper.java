@@ -13,11 +13,11 @@ import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferFactory;
 import reactor.core.publisher.Flux;
 
-/** Immutable adapter for explicitly composed Spring DataBuffer streams.
- * Each subscription owns its delivered input buffers and unpublished output. Component views
- * avoid whole-input-chunk copies; native decoding and generator-to-output copying still remain.
- * Parsing, framing, budgets and backpressure use the configured Provider and Reactor adapter.
- * No HTTP codecs, schedulers, subscriptions or global registrations are installed.
+/**
+ * 用于显式组合 Spring DataBuffer 流的不可变适配器，可并发共享。
+ * 每个订阅接管已交付输入及未发布输出；组件视图避免整块输入复制，原生解码和输出复制仍存在。
+ * Provider 负责解析和绑定，Reactor 适配器负责分帧、预算及背压；不接管 HTTP 编解码器或全局注册。
+ *
  * @since 1.0.0
  * @see JsonStreamMapper
  */
@@ -30,51 +30,59 @@ public final class DataBufferJsonStreamMapper {
         allocator = new DataBufferAllocator(factory);
     }
 
-    /** Reuse the configured mapper and a thread-safe host factory, such as response.bufferFactory().
-     * Heap/direct and pooling preferences belong to the factory. Allocates no buffers until demand.
+    /**
+     * 复用映射器和线程安全宿主工厂，例如 {@code response.bufferFactory()}。
+     * 堆内、直接内存与池化策略由工厂决定；产生需求前不分配缓冲区。
      */
     public static DataBufferJsonStreamMapper of(JsonMapper mapper, DataBufferFactory factory) {
         return new DataBufferJsonStreamMapper(Objects.requireNonNull(mapper, "mapper"),
                 Objects.requireNonNull(factory, "factory"));
     }
 
-    /** Consume one transferred ownership per delivered buffer, as with a Spring request body.
-     * Does not retain an additional reference. The adapter releases delivered buffers after parsing
-     * or active callback cleanup on error/cancel; upstream owns undelivered buffers and its queues.
-     * Bytes must remain stable until consumed. Input positions are preserved. A caller sharing
-     * pooled buffers retains/releases its own additional reference before transferring this one.
+    /**
+     * 接管每个已交付缓冲区的所有权，适用于 Spring 请求体；不额外 retain。
+     * 解析完成后释放输入；错误或取消时先结束活动回调再释放，上游负责未交付输入及自己的队列。
+     * 字节须稳定至消耗完成，输入位置不变；共享池化缓冲区时，调用方须另行持有自己的引用。
      */
     public <T> Flux<T> read(Publisher<? extends DataBuffer> input, JsonType<T> type, JsonReadOptions options) {
         return streams.readChunks(chunks(input), type, options);
     }
 
-    /** Class counterpart of read, consuming one transferred input ownership per delivered buffer. */
+    /**
+     * 按类读取，每个输入转移一次所有权。
+     *
+     * @see #read(Publisher, JsonType, JsonReadOptions)
+     */
     public <T> Flux<T> read(Publisher<? extends DataBuffer> input, Class<T> type, JsonReadOptions options) {
         return read(input, JsonType.of(type), options);
     }
 
-    /** Stream a document's immutable structural events with the input ownership of read(). */
+    /**
+     * 逐令牌读取唯一完整文档；输入所有权同 {@link #read(Publisher, JsonType, JsonReadOptions)}。
+     */
     public Flux<JsonEvent> readEvents(Publisher<? extends DataBuffer> input) {
         return streams.readChunkEvents(chunks(input));
     }
 
-    /** Encode compact records into bounded factory-allocated segments. Publication transfers each
-     * buffer downstream, for example to ServerHttpResponse.writeWith. Other consumers release
-     * consumed buffers and any queues/discards they introduce. This adapter releases unpublished
-     * buffers on failure/cancellation. Never releases application input values as output discards.
+    /**
+     * 将记录紧凑编码为工厂分配的有界输出块，发布时向下游转移所有权。
+     * 例如交给 {@code ServerHttpResponse.writeWith}；其他消费者须释放已消费缓冲区及其队列、丢弃。
+     * 失败或取消时适配器释放未发布输出，不将业务输入值当作输出丢弃缓冲区释放。
      */
     public Flux<DataBuffer> write(Publisher<?> values, JsonWriteOptions options) {
         return streams.writeChunks(values, options, allocator);
     }
 
-    /** Stream one structured SINGLE_VALUE document with the output ownership of write(). */
+    /**
+     * 增量写入一个 SINGLE_VALUE 结构文档；输出所有权同 {@link #write(Publisher, JsonWriteOptions)}。
+     */
     public Flux<DataBuffer> writeEvents(Publisher<? extends JsonEvent> events, JsonWriteOptions options) {
         return streams.writeEventChunks(events, options, allocator);
     }
 
     private static Flux<JsonInputChunk> chunks(Publisher<? extends DataBuffer> input) {
         Objects.requireNonNull(input, "input");
-        // Deliver ownership during onNext; no delayed fusion poll may outlive source delivery.
+        // 在 onNext 内转移所有权，避免融合延迟取值超出源的交付生命周期。
         return Flux.from(input).hide().map(DataBufferInputChunk::new);
     }
 }

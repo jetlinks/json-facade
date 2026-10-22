@@ -7,9 +7,12 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
 import org.springframework.context.annotation.Import;
 
-/** Boot 3 bridge to its managed Jackson 2 configuration; does not change any HTTP codec.
- * Set json.facade.enabled=false to disable this auto-configuration entirely.
+/**
+ * 将 Boot 3 管理的 Jackson 2 配置桥接到 facade，不修改 HTTP 编解码器。
+ * 设置 {@code json.facade.enabled=false} 可完全禁用此自动配置。
+ *
  * @since 1.0.0
+ * @see JsonFacadeConfiguration
  */
 @AutoConfiguration(after = JacksonAutoConfiguration.class)
 @ConditionalOnClass(ObjectMapper.class)

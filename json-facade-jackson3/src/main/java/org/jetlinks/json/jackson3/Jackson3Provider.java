@@ -29,9 +29,12 @@ import org.jetlinks.json.spi.JsonConfiguration;
 import org.jetlinks.json.spi.JsonModuleContext;
 import org.jetlinks.json.spi.JsonProvider;
 
-/** ServiceLoader provider for Jackson 3. All configuration precedes mapper publication.
- * No Spring integration, global mapper or late mutation.
+/**
+ * Jackson 3 的 ServiceLoader Provider，可跨构建复用；发布前完成全部配置。
+ * 不注册全局映射器，不进行发布后配置变更；Spring 桥接由对应模块提供。
+ *
  * @since 1.0.0
+ * @see JsonProvider
  */
 public final class Jackson3Provider implements JsonProvider {
     @Override
@@ -123,7 +126,8 @@ public final class Jackson3Provider implements JsonProvider {
             }
 
             @Override
-            public JsonObject deserialize(JsonParser input, DeserializationContext context) throws tools.jackson.core.JacksonException {
+            public JsonObject deserialize(JsonParser input, DeserializationContext context)
+                    throws tools.jackson.core.JacksonException {
                 return JsonValues.of(context.readValue(input, Object.class), treeMapper(context)).asObject();
             }
         });
@@ -134,19 +138,22 @@ public final class Jackson3Provider implements JsonProvider {
             }
 
             @Override
-            public JsonArray deserialize(JsonParser input, DeserializationContext context) throws tools.jackson.core.JacksonException {
+            public JsonArray deserialize(JsonParser input, DeserializationContext context)
+                    throws tools.jackson.core.JacksonException {
                 return JsonValues.of(context.readValue(input, Object.class), treeMapper(context)).asArray();
             }
         });
         module.addSerializer(JsonValue.class, new ValueSerializer<>() {
             @Override
-            public void serialize(JsonValue value, JsonGenerator output, SerializationContext context) throws tools.jackson.core.JacksonException {
+            public void serialize(JsonValue value, JsonGenerator output, SerializationContext context)
+                    throws tools.jackson.core.JacksonException {
                 context.writeValue(output, JsonValues.bindingValue(value));
             }
         });
         module.addDeserializer(JsonValue.class, new ValueDeserializer<>() {
             @Override
-            public JsonValue deserialize(JsonParser input, DeserializationContext context) throws tools.jackson.core.JacksonException {
+            public JsonValue deserialize(JsonParser input, DeserializationContext context)
+                    throws tools.jackson.core.JacksonException {
                 return JsonValues.of(context.readValue(input, Object.class), treeMapper(context));
             }
 
@@ -180,7 +187,9 @@ public final class Jackson3Provider implements JsonProvider {
         }
     }
 
-    /** Exact-class lookup prevents Jackson's inherited serializer matching from widening the SPI. */
+    /**
+     * 按精确类型查找，避免 Jackson 的继承匹配扩大 SPI 适配范围。
+     */
     private static final class ExactSerializers extends tools.jackson.databind.module.SimpleSerializers {
         private static final long serialVersionUID = 1L;
 

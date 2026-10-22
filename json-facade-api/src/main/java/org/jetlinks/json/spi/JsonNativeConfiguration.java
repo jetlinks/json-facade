@@ -3,10 +3,13 @@ package org.jetlinks.json.spi;
 import java.util.Objects;
 import java.util.function.Consumer;
 
-/** Typed build-time customization of a Provider's borrowed native builder.
- * Reusable callbacks must be thread-safe and must not retain the builder or perform I/O.
- * The Provider creates and validates an independent native configuration for each build.
- * @param <C> native builder type, supplied by the selected engine
+/**
+ * 构建期原生配置回调；Provider 每次构建创建并校验独立的原生配置。
+ * 回调跨构建复用时须线程安全，不得保留借用的构建器或执行 I/O。
+ *
+ * @param type 所选引擎提供的非空原生构建器类型
+ * @param callback 非空同步配置回调
+ * @param <C> 原生构建器类型
  * @since 1.0.0
  * @see JsonConfiguration#configureNative(Object)
  */

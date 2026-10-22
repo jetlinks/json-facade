@@ -32,16 +32,22 @@ import org.jetlinks.json.spi.JsonConfiguration;
 import org.jetlinks.json.spi.JsonModuleContext;
 import org.jetlinks.json.spi.JsonProvider;
 
-/** ServiceLoader provider for Jackson 2. All configuration precedes mapper publication.
- * Native adaptation copies host configuration before enforcing facade resource contracts.
+/**
+ * Jackson 2 的 ServiceLoader Provider，可跨构建复用；发布前完成全部配置。
+ * 原生适配先复制宿主配置，再落实 facade 的资源契约，不修改源映射器。
+ *
  * @since 1.0.0
+ * @see JsonProvider
  */
 public final class Jackson2Provider implements JsonProvider {
-    /** Snapshot an already configured JSON mapper, including native modules and inclusion policies.
-     * The source and its factory are never mutated. Custom serializers/handlers are shared as in
-     * ObjectMapper.copy() and must be thread-safe; subsequent source configuration is not followed.
-     * @param source fully configured JSON mapper supporting ObjectMapper.copy()
-     * @return independent facade with the default materialized-value byte budget
+
+    /**
+     * 为已完成配置的 JSON 映射器创建快照，保留原生模块及包含策略。
+     * 源映射器和工厂不变；自定义序列化器及处理器按 {@code ObjectMapper.copy()} 语义共享，须线程安全。
+     * 后续源配置变化不会同步到快照。
+     *
+     * @param source 已完成配置且支持 {@code ObjectMapper.copy()} 的 JSON 映射器
+     * @return 配置独立的 facade，使用默认增量单值字节预算
      * @since 1.0.0
      * @see #adapt(ObjectMapper, int)
      */
@@ -49,14 +55,16 @@ public final class Jackson2Provider implements JsonProvider {
         return adapt(source, JsonOptions.DEFAULT.maxValueBytes());
     }
 
-    /** Snapshot native binding settings while enforcing facade IO and structural contracts.
-     * Native read/write depth limits are aligned to their minimum. Other native read constraints
-     * remain intact. options() reports native flags and budgets; omitNulls reports recognized
-     * global value-inclusion policies, not content/type/property/custom-filter inclusion details.
-     * @param source fully configured JSON mapper; non-JSON factories are unsupported
-     * @param maxValueBytes positive byte budget for a materialized incremental record
-     * @return thread-safe facade; caller-owned IO stays open and reads require one complete root
-     * @throws JsonException with CONFIGURATION kind if native copying or adaptation fails
+    /**
+     * 保留原生绑定配置的快照，落实 facade 的 I/O 和结构契约。
+     * <p>读写深度上限统一为两者较小值，其他原生读取限制保留。
+     * {@code options()} 报告原生标志和预算，其中 omitNulls 仅概括已识别的全局值包含策略，
+     * 不描述内容、类型、属性或自定义过滤器的全部规则。
+     *
+     * @param source 已完成配置的 JSON 映射器，不支持非 JSON 工厂
+     * @param maxValueBytes 正整数，增量单条物化记录的字节预算
+     * @return 可并发共享的 facade；调用方 I/O 保持打开，整值读取须恰好一个完整根值
+     * @throws JsonException 原生复制或适配失败时抛出，类别为 CONFIGURATION
      * @since 1.0.0
      */
     public static JsonMapper adapt(ObjectMapper source, int maxValueBytes) {
@@ -204,7 +212,8 @@ public final class Jackson2Provider implements JsonProvider {
         });
         module.addSerializer(JsonValue.class, new JsonSerializer<>() {
             @Override
-            public void serialize(JsonValue value, JsonGenerator output, SerializerProvider context) throws IOException {
+            public void serialize(JsonValue value, JsonGenerator output, SerializerProvider context)
+                    throws IOException {
                 context.defaultSerializeValue(JsonValues.bindingValue(value), output);
             }
         });
@@ -245,15 +254,18 @@ public final class Jackson2Provider implements JsonProvider {
         }
     }
 
-    /** Exact-class lookup prevents Jackson's inherited serializer matching from widening the SPI. */
+    /**
+     * 按精确类型查找，避免 Jackson 的继承匹配扩大 SPI 适配范围。
+     */
     private static final class ExactSerializers extends com.fasterxml.jackson.databind.module.SimpleSerializers {
         private static final long serialVersionUID = 1L;
 
         @Override
         public JsonSerializer<?> findSerializer(com.fasterxml.jackson.databind.SerializationConfig config,
-                                                  com.fasterxml.jackson.databind.JavaType type,
-                                                  com.fasterxml.jackson.databind.BeanDescription description) {
-            com.fasterxml.jackson.databind.type.ClassKey key = new com.fasterxml.jackson.databind.type.ClassKey(type.getRawClass());
+                                                com.fasterxml.jackson.databind.JavaType type,
+                                                com.fasterxml.jackson.databind.BeanDescription description) {
+            com.fasterxml.jackson.databind.type.ClassKey key =
+                    new com.fasterxml.jackson.databind.type.ClassKey(type.getRawClass());
             if (_classMappings != null && _classMappings.containsKey(key)) {
                 return _classMappings.get(key);
             }
