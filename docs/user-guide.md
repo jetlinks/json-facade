@@ -126,7 +126,9 @@ JsonMapper partner = Json.global("partner-input");
 
 全局引用与 API ClassLoader 同寿命，不提供 reset/unregister/close。只注册启动时已知的有限配置名；不要用请求、设备或动态租户 ID。插件卸载、多应用隔离和可重复测试优先注入宿主持有的普通实例。
 
-容器可用 `registerGlobalFactory(factory)` 提前保留默认位置，首次访问再创建。失败可重试同一工厂，保留位置不能被替换；工厂不得递归访问默认实例。未保留位置的默认发现失败不会发布半成品，之后仍可显式注册。
+容器可用 `registerGlobalFactory(factory)` 提前保留默认位置，首次访问再解析。并发首次访问可在全局锁外多次调用工厂，只有一个结果被发布，成功调用均返回该结果；单例创建由容器负责。工厂须支持并发、可重复解析，不得依赖只调用一次来执行副作用或管理资源，也不得在同一线程递归访问默认实例。未注册的默认发现也可能创建多个候选，发布后的访问只读 volatile 引用。
+
+失败调用保留原异常，即使另一调用已成功发布；未发布时可重试同一工厂。保留位置不能被替换，解析进行中的重复注册立即失败。未保留位置的默认发现失败不会发布半成品，全部活动解析结束后仍可显式注册。
 
 <a id="spring"></a>
 ### Spring 默认配置
@@ -143,7 +145,7 @@ Spring 模块支持 Spring 6 / Boot 3 的 Jackson 2 ObjectMapper。Boot 自动�
 
 普通业务 Bean 初始化时可使用全局门面；原生 mapper、customizer 或宿主门面构造中不能反向依赖该全局，以免循环初始化。更早的 BeanFactoryPostProcessor 不能依赖这项注册。默认位置已占用、原生候选缺失/歧义会明确失败，全局门面须为 singleton。
 
-关闭 ApplicationContext 不重置全局。重复上下文应关闭 global-enabled 并注入各自实例；原生 handler 也可能持有容器引用。失败启动会释放 bootstrap 的 BeanFactory 引用，但不取消全局保留位置。普通 Spring 配置入口无需 Reactor/Netty。非 Spring 宿主可用 `Jackson2Provider.adapt(nativeMapper[, maxValueBytes])` 创建同样的配置快照；源须为支持 copy 的 JSON mapper。
+关闭 ApplicationContext 不重置全局。重复上下文应关闭 global-enabled 并注入各自实例；原生 handler 也可能持有容器引用。成功发布后全局释放工厂引用，容器持有的 bootstrap 保留 BeanFactory 至销毁，供已开始的并发解析使用；失败启动会释放死容器引用，但不取消全局保留位置。普通 Spring 配置入口无需 Reactor/Netty。非 Spring 宿主可用 `Jackson2Provider.adapt(nativeMapper[, maxValueBytes])` 创建同样的配置快照；源须为支持 copy 的 JSON mapper。
 
 <a id="options"></a>
 ## 通用配置与预算
@@ -555,7 +557,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 249 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过。同步迭代器在两套 Provider 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 257 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在两套 Provider 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 

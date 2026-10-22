@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -141,14 +140,16 @@ class GlobalJsonMappersTest {
     }
 
     @Test
-    void concurrentDefaultReadsBuildAndPublishOnlyOnce() throws Exception {
-        JsonMapper mapper = mapper();
+    void concurrentFirstReadsResolveIndependentlyAndPublishOneWinner() throws Exception {
         AtomicInteger builds = new AtomicInteger();
         CountDownLatch ready = new CountDownLatch(8);
         CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch resolving = new CountDownLatch(8);
         GlobalJsonMappers globals = new GlobalJsonMappers(() -> {
             builds.incrementAndGet();
-            return mapper;
+            resolving.countDown();
+            await(resolving);
+            return mapper();
         });
         ExecutorService executor = Executors.newFixedThreadPool(8);
         try {
@@ -162,10 +163,12 @@ class GlobalJsonMappersTest {
             }
             await(ready);
             start.countDown();
+            JsonMapper winner = reads.get(0).get(10, TimeUnit.SECONDS);
             for (Future<JsonMapper> read : reads) {
-                assertSame(mapper, read.get(10, TimeUnit.SECONDS));
+                assertSame(winner, read.get(10, TimeUnit.SECONDS));
             }
-            assertEquals(1, builds.get());
+            assertSame(winner, globals.mapper());
+            assertEquals(8, builds.get());
         } finally {
             start.countDown();
             executor.shutdownNow();
@@ -179,7 +182,6 @@ class GlobalJsonMappersTest {
         JsonMapper explicit = mapper();
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
-        CountDownLatch registering = new CountDownLatch(1);
         GlobalJsonMappers globals = new GlobalJsonMappers(() -> {
             entered.countDown();
             await(release);
@@ -189,21 +191,52 @@ class GlobalJsonMappersTest {
         try {
             Future<JsonMapper> read = executor.submit(() -> globals.mapper());
             await(entered);
-            Future<?> registration = executor.submit(() -> {
-                registering.countDown();
-                globals.register(explicit);
-            });
-            await(registering);
-            assertFalse(registration.isDone());
-            release.countDown();
-            assertSame(built, read.get(10, TimeUnit.SECONDS));
+            Future<?> registration = executor.submit(() -> globals.register(explicit));
             ExecutionException error = assertThrows(ExecutionException.class,
                     () -> registration.get(10, TimeUnit.SECONDS));
             assertTrue(error.getCause() instanceof JsonException);
             assertEquals(JsonException.Kind.CONFIGURATION, ((JsonException) error.getCause()).kind());
+            assertConfiguration(() -> globals.registerFactory(() -> explicit));
+            release.countDown();
+            assertSame(built, read.get(10, TimeUnit.SECONDS));
             assertSame(built, globals.mapper());
         } finally {
             release.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void failedResolverPreservesItsFailureWhenAnotherThreadPublishes() throws Exception {
+        JsonMapper built = mapper();
+        JsonException failure = new JsonException(JsonException.Kind.PROVIDER, "fixture");
+        AtomicInteger attempts = new AtomicInteger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch fail = new CountDownLatch(1);
+        GlobalJsonMappers globals = new GlobalJsonMappers(GlobalJsonMappersTest::mapper);
+        globals.registerFactory(() -> {
+            if (attempts.incrementAndGet() == 1) {
+                entered.countDown();
+                await(fail);
+                throw failure;
+            }
+            return built;
+        });
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<JsonMapper> failed = executor.submit(() -> globals.mapper());
+            await(entered);
+            Future<JsonMapper> successful = executor.submit(() -> globals.mapper());
+            assertSame(built, successful.get(10, TimeUnit.SECONDS));
+            fail.countDown();
+            ExecutionException error = assertThrows(ExecutionException.class,
+                    () -> failed.get(10, TimeUnit.SECONDS));
+            assertSame(failure, error.getCause());
+            assertSame(built, globals.mapper());
+            assertEquals(2, attempts.get());
+        } finally {
+            fail.countDown();
             executor.shutdownNow();
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
         }

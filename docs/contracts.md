@@ -175,8 +175,16 @@ Global references live with the API ClassLoader. Names must be a finite set of
 application configurations. Unloadable plugins and repeated isolated contexts
 should use host-owned instances. Lazy factory reservation does not run the
 factory at registration; failures may retry that same factory, but its reservation
-cannot be replaced. Recursive initialization fails. Failed unreserved default
-discovery does not publish a partial instance.
+cannot be replaced. First lookups resolve outside the publication lock and may
+invoke the factory concurrently. Factories must support repeatable, thread-safe
+resolution, without relying on one invocation for side effects/resource ownership.
+Exactly one result is published; successful callers all return that winner.
+Unregistered default discovery can also construct concurrent candidates.
+Same-thread recursive initialization fails. Registration during active resolution
+fails immediately. A failed call propagates its original failure, even if another
+caller publishes; failed unreserved discovery does not publish a partial instance.
+The published lookup path is a volatile read and never invokes a factory or waits
+for another resolver. Container factories delegate singleton creation to their owner.
 
 The optional Spring module supports Spring 6 / Boot 3 Jackson 2 configuration.
 It adapts the unique or primary native bean, unless a host JsonMapper bean takes
@@ -201,8 +209,10 @@ Existing global reservations or initialized defaults fail startup.
 `json.facade.global-enabled=false` leaves only injectable context ownership;
 `json.facade.enabled=false` disables Boot auto-configuration.
 `json.facade.max-value-bytes` defaults to 8 MiB for the adapted mapper.
-Context close never resets globals. Bootstrap drops BeanFactory references after
-publication or failed startup, but the reservation remains. Native handlers may
+Context close never resets globals. Successful publication drops the global
+factory reference; the context-owned bootstrap keeps resolution available to
+already active callers until destroy clears its BeanFactory reference. Failed
+startup releases the dead container but leaves its global reservation. Native handlers may
 retain container dependencies, so global snapshots are not unloadable contexts.
 
 ## Incremental reads and structural events
@@ -303,7 +313,7 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 255 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 257 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
 module's 80% branch-coverage gate pass. Tests cover both real Providers, configured
 extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
@@ -363,6 +373,7 @@ python3 scripts/run-databuffer-stress.py --release-only
 python3 scripts/run-streaming-benchmarks.py
 python3 scripts/run-streaming-benchmarks.py --tree
 python3 scripts/run-streaming-benchmarks.py --tree-wrap
+python3 scripts/run-streaming-benchmarks.py --global-lookup
 python3 scripts/run-streaming-benchmarks.py --iterator
 python3 scripts/run-streaming-benchmarks.py --provider-read
 python3 scripts/run-streaming-benchmarks.py --published-write

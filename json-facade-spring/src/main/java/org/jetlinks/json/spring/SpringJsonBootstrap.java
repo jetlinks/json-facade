@@ -14,7 +14,9 @@ import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.beans.factory.support.BeanDefinitionReaderUtils;
 import org.springframework.beans.factory.support.RootBeanDefinition;
 
-/** Early configuration reservation, late bean resolution, and release on failed/closed contexts. */
+/** Early global reservation and concurrent resolution through Spring's singleton lifecycle.
+ * The global registry owns publication; this context-owned bootstrap releases its container on destroy.
+ */
 final class SpringJsonBootstrap implements BeanFactoryPostProcessor, SmartInitializingSingleton, DisposableBean {
     private final boolean globalEnabled;
     private final int maxValueBytes;
@@ -46,13 +48,14 @@ final class SpringJsonBootstrap implements BeanFactoryPostProcessor, SmartInitia
     private JsonMapper resolve() {
         ConfigurableListableBeanFactory beanFactory = factory;
         if (beanFactory == null) {
-            throw configuration("Spring JSON context is closed or its default was already resolved");
+            throw configuration("Spring JSON context is closed");
         }
         var selected = beanFactory.resolveNamedBean(JsonMapper.class);
         if (!beanFactory.isSingleton(selected.getBeanName())) {
             throw configuration("Global JSON mapper must be a singleton Spring bean");
         }
-        factory = null;
+        // Another global caller may already have captured this resolver before publication.
+        // Keep context-owned resolution available until destroy; the global drops its factory reference.
         return selected.getBeanInstance();
     }
 

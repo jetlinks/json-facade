@@ -27,6 +27,7 @@ def main():
     fixtures.add_argument("--netty", action="store_true", help="Compare ordinary and pooled Netty paths")
     fixtures.add_argument("--tree", action="store_true", help="Compare chained and fused tree access")
     fixtures.add_argument("--tree-wrap", action="store_true", help="Compare borrowed and copied Map/List trees")
+    fixtures.add_argument("--global-lookup", action="store_true", help="Compare published global and direct references")
     fixtures.add_argument("--iterator", action="store_true", help="Compare root-array iterator and cursor traversal")
     fixtures.add_argument("--provider-read", action="store_true", help="Compare configured native/facade inputs")
     fixtures.add_argument("--published-write", action="store_true", help="Compare independently owned output")
@@ -40,7 +41,9 @@ def main():
     generated.mkdir(parents=True, exist_ok=True)
     base_cp = runpy.run_path(str(ROOT / "scripts" / "run-netty-stress.py"))["classpath"]() \
         if args.netty else STRESS["classpath"]()
-    if args.tree_wrap:
+    if args.global_lookup:
+        fixture, package = "GlobalLookupBenchmark", "org.jetlinks.json"
+    elif args.tree_wrap:
         fixture, package = "TreeWrapBenchmark", "org.jetlinks.json"
     elif args.provider_read:
         fixture, package = "ProviderReadBenchmark", "org.jetlinks.json"
@@ -62,7 +65,8 @@ def main():
         ("-jvmArgs", "-Xms512m -Xmx512m"), ("-prof", "gc"), ("-rf", "json"), ("-rff", args.result),
     ]
     options = [item for flag, value in defaults if flag not in extra for item in (flag, value)]
-    multiple = args.tree or args.tree_wrap or args.iterator or args.provider_read or args.published_write
+    multiple = args.tree or args.tree_wrap or args.global_lookup or args.iterator \
+        or args.provider_read or args.published_write
     benchmark = "^" + re.escape(f"{package}.{fixture}") + (r"\..*$" if multiple else r"\.run$")
     subprocess.run(["java", "-cp", cp, "org.openjdk.jmh.Main", benchmark]
                    + options + extra, check=True, cwd=ROOT)

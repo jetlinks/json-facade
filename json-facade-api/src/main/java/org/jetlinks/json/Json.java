@@ -44,7 +44,7 @@ public final class Json {
     /** Publish a configured default before its first successful lookup or registration.
      * The caller finishes configuration first; registration does not build, mutate or close it.
      * @param mapper thread-safe implementation obeying JsonMapper's operation/resource contracts
-     * @throws JsonException with CONFIGURATION kind if the default is already registered or initialized
+     * @throws JsonException with CONFIGURATION kind if the default is registered, initialized or being resolved
      * @since 1.0.0
      * @see JsonMapperBuilder#build()
      */
@@ -53,12 +53,16 @@ public final class Json {
     }
 
     /** Reserve the default before dependency-injection beans are created, without creating a mapper.
-     * The factory runs synchronously on first lookup, at most once successfully, and must return a
-     * fully configured, thread-safe mapper. Failed lookups retain the factory for retry; reservation
-     * remains write-once even after failure. Recursive lookups fail with CONFIGURATION. The factory
-     * reference is released after successful publication; no replacement or reset is provided.
-     * @param factory application-lifetime factory; must not recursively access the default
-     * @throws JsonException with CONFIGURATION kind if already registered or initialized
+     * First lookups resolve synchronously outside the publication lock and may call the factory
+     * concurrently. It must support repeatable concurrent resolution of fully configured, thread-safe
+     * mappers; let the owning container control singleton construction. Exactly one result is published,
+     * and successful lookups all return that winner. A failed call propagates its original failure;
+     * if no result was published, later calls may retry the same factory. Reservation remains write-once.
+     * Same-thread recursive lookups fail with CONFIGURATION. The factory reference is released after
+     * publication; no replacement or reset is provided. Published lookups never call the factory.
+     * @param factory application-lifetime resolver; must not recursively access the default or
+     * depend on a single invocation for side effects or resource ownership
+     * @throws JsonException with CONFIGURATION kind if already registered, initialized or being resolved
      * @since 1.0.0
      * @see #registerGlobal(JsonMapper)
      */
