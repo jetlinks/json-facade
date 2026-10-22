@@ -1,0 +1,51 @@
+name: Verify
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java: ['17', '21']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+      - run: mvn -B -ntp verify
+      - name: Tree view and validation-error ancestor-retention regression
+        run: python3 scripts/run-tree-access-stress.py > target/tree-access.jsonl
+      - name: Bounded-heap streaming smoke matrix
+        run: python3 scripts/run-streaming-stress.py --mib 8 --heaps 128 --chunks 64 8192 > target/streaming-smoke.jsonl
+      - name: Closed resource heap and direct-memory regression
+        run: python3 scripts/run-resource-release-stress.py > target/resource-release.jsonl
+      - name: Pooled Netty streaming and reference-release regression
+        run: |
+          python3 scripts/run-netty-stress.py --mib 8 --chunks 64 8192 > target/netty-streaming.jsonl
+          python3 scripts/run-netty-stress.py --release-only > target/netty-release.jsonl
+      - name: Spring DataBuffer streaming and closed-owner regression
+        run: |
+          python3 scripts/run-databuffer-stress.py --mib 8 --chunks 64 8192 > target/databuffer-streaming.jsonl
+          python3 scripts/run-databuffer-stress.py --release-only > target/databuffer-release.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-java-${{ matrix.java }}
+          path: |
+            **/target/site/jacoco/
+            **/target/site/jacoco-aggregate/
+            **/target/surefire-reports/
+            **/target/spotbugsXml.xml
+            **/target/checkstyle-result.xml
+            target/streaming-smoke.jsonl
+            target/tree-access.jsonl
+            target/resource-release.jsonl
+            target/netty-streaming.jsonl
+            target/netty-release.jsonl
+            target/databuffer-streaming.jsonl
+            target/databuffer-release.jsonl
