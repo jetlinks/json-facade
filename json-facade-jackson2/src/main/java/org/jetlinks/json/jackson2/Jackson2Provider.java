@@ -295,7 +295,7 @@ public final class Jackson2Provider implements JsonProvider {
 
         @Override
         public T deserialize(JsonParser input, DeserializationContext context) {
-            return adapter.read(new Jackson2Reader(input));
+            return adapter.read(new Jackson2Reader(input, context));
         }
     }
 }

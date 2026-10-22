@@ -38,6 +38,38 @@ order. Type mismatches and conflicts with authoritative `JsonOptions` fail at
 build time. Callbacks must not retain builders or mutate published mappers.
 Native annotations, modules and custom handlers remain explicit engine boundaries.
 
+### Operation configuration
+
+`JsonMapper.withOptions(JsonOperationOptions)` prepares an
+immutable, reusable operation mapper. Unspecified common flags inherit the current
+mapper; explicit false differs from inheritance. Empty options return the same
+instance. Options cover binding flags, typed application attributes and typed
+native reader/writer transformations, not framing, Pointer selection or budgets.
+
+Preparation applies common overrides, then native transformations, then validates
+explicit flags and mandatory resource/root contracts before any I/O. Native
+transformations run once per preparation and must return a non-null reader/writer;
+they cannot replace the stream factory. Attributes are passed through native
+binding contexts and neutral adapter cursors; values must be stable and thread-safe.
+They only have an effect when a registered adapter or native handler consumes them.
+
+Providers share native caches for lightweight changes. Changing default null
+inclusion uses native copy/rebuild with isolated serializer caches during
+preparation; annotations and custom serializers retain their native precedence.
+No global options cache or ThreadLocal is introduced. Prepared mappers propagate
+through synchronous, tree, iterator and incremental operations; reactive resources
+remain subscription-local and streaming output remains compact.
+Conversion connects the configured native reader and writer through native token
+buffers; Jackson 3 uses ObjectWriter.writeValueIntoBuffer directly, preserving
+the generator's binding context without an intermediate neutral tree.
+
+Contract tests cover default/explicit-false inheritance, warm-cache null isolation,
+nested attributes and native overrides, conversion/tree/session consistency,
+concurrent variants, early conflict rejection, caller I/O ownership and compact
+reactive output. Reconfiguration costs belong to preparation, including a native
+stream-factory copy when Jackson 2's duplicate-key detection changes. This avoids
+changing detectors after parsing contexts have been created.
+
 Modules and adapters are registered at build time and must be thread-safe.
 Module IDs and adapter classes must be unique. Adapter matching is exact Class,
 without subtype widening or generic-Type registration. Borrowed adapter cursors
@@ -313,7 +345,7 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 257 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 283 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
 module's 80% branch-coverage gate pass. Tests cover both real Providers, configured
 extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
@@ -332,6 +364,33 @@ byte[] delegation. The Class convenience comparison adds about 16–28 B per
 one-record operation and about 16 B per 1000-record operation; no per-record type
 wrapping was observed. Timing results do not establish universal CPU savings.
 
+Operation-options JMH uses Java 21, a 512 MiB heap, GC profiling, two forks,
+three 300 ms warmups and four 300 ms measurements. It compares the same one/1000
+three-field Map records with a default mapper, one unused typed attribute and
+an explicitly prepared null-inclusion variant. Configuration does not change
+payload bytes in this fixture; behavior differences are verified separately.
+
+| Provider | Attribute preparation µs / B | Null-policy preparation µs / B |
+| --- | --- | --- |
+| Jackson 2 | 0.284 / 2592 | 0.633 / 8648 |
+| Jackson 3 | 0.315 / 2728 | 1.284 / 12208 |
+
+Empty preparation returns the same mapper with no measured allocation. Native
+serializer cold-start work is outside these preparation timings. Reusing an
+attribute operation adds about 64 B (Jackson 2) / 56 B (Jackson 3) per complete
+conversion, independent of one versus 1000 records; complete reads add roughly
+16–64 B. Cursor, incremental-session and reactive-write comparisons do not show
+an added allocation per record from options. At 1000 records, default/attribute
+reactive writes allocate 250258/250258 B (Jackson 2) and 258354/258354 B
+(Jackson 3). Their measured times overlap; there is no stable slowdown signal.
+
+Default-path before/after comparisons against fe9018b retain equivalent
+configured native/facade input and independently owned stream-output workloads.
+Repeated Jackson 3 byte reads and both Providers' stream writes show overlapping
+timing intervals and no material allocation growth. These measurements support
+reusing prepared options; they do not establish zero framework overhead for
+arbitrary handlers, trees or workloads.
+
 Borrowed-tree JMH uses Java 21, a 512 MiB heap, GC profiling, three forks, three
 300 ms warmups and four 300 ms measurements. Across both Providers and one/1000
 nested elements, root `wrap(Map/List)` allocates 32 B/op (about 5–7 ns/op),
@@ -343,20 +402,21 @@ These results support constant-cost root wrapping, not allocation-free access
 or conversion; Provider binding, export and explicit deep copies have their own costs.
 
 The root-array iterator comparison uses identical binding, count/sum checks and
-array/EOF validation against the existing cursor. Java 21, 256 MiB heap, GC
-profiling, three forks, three 500 ms warmups and four 500 ms measurements give
+array/EOF validation against the existing cursor. Java 21, 512 MiB heap, GC
+profiling, two forks, three 300 ms warmups and four 300 ms measurements give
 these results for 1000 Integer elements (time is mean ± JMH error):
 
 | Provider | Cursor µs/op | Iterator µs/op | Cursor B/op | Iterator B/op |
 | --- | --- | --- | --- | --- |
-| Jackson 2 | 33.09 ± 0.67 | 38.94 ± 2.32 | 112728 | 112737 |
-| Jackson 3 | 43.53 ± 2.60 | 41.39 ± 1.01 | 64865 | 64857 |
+| Jackson 2 | 28.86 ± 1.70 | 36.22 ± 11.36 | 16897 | 48889 |
+| Jackson 3 | 44.87 ± 2.74 | 50.42 ± 2.70 | 64865 | 64857 |
 
-These are total operation allocations, including native binding. Comparing one
-and 1000 elements shows no additional allocation per element from the iterator;
-small operation-level differences depend on JIT escape analysis. Jackson 2 costs
-about 5.8 µs more per 1000 elements (18%) in this fixture; Jackson 3 does not show
-a stable timing difference. This compares convenience iteration with cursor use,
+These are total operation allocations, including native binding. Jackson 2 now
+prepares the cursor's configured reader once, reducing allocation relative to the
+previous per-element setup. In this run the iterator costs about 32 B more per
+element than the cursor; native reader derivation and JIT escape analysis depend
+on the call shape. Jackson 3 shows no per-element allocation difference.
+This compares convenience iteration with cursor use,
 not the full facade with a native parser; it does not establish negligible CPU
 overhead for all payloads or Providers.
 
@@ -377,6 +437,7 @@ python3 scripts/run-streaming-benchmarks.py --global-lookup
 python3 scripts/run-streaming-benchmarks.py --iterator
 python3 scripts/run-streaming-benchmarks.py --provider-read
 python3 scripts/run-streaming-benchmarks.py --published-write
+python3 scripts/run-streaming-benchmarks.py --operation-options
 python3 scripts/run-streaming-benchmarks.py --netty
 ```
 

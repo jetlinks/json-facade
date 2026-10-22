@@ -7,12 +7,19 @@ import com.fasterxml.jackson.databind.SerializerProvider;
 import org.jetlinks.json.internal.JsonNumbers;
 import org.jetlinks.json.internal.JsonValues;
 import org.jetlinks.json.JsonWriter;
+import org.jetlinks.json.JsonAttribute;
 
 /** Thin generator cursor; caller ownership and no auto-completion are configured by the provider. */
 final class Jackson2Writer implements JsonWriter {
     private JsonGenerator generator;
     private ObjectWriter valueWriter;
     private SerializerProvider context;
+
+    @Override
+    public <T> T attribute(JsonAttribute<T> key) {
+        generator();
+        return key.cast(context == null ? valueWriter.getAttributes().getAttribute(key) : context.getAttribute(key));
+    }
 
     Jackson2Writer(JsonGenerator generator, SerializerProvider context) {
         this.generator = generator;

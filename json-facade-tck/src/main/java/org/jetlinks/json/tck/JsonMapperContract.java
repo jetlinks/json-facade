@@ -49,7 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Uses no engine mocks. Test payloads are deliberately bounded.
  * @since 1.0.0
  */
-public abstract class JsonMapperContract extends JsonTreeContract {
+public abstract class JsonMapperContract extends JsonOperationContract {
     private static final JsonType<List<Map<String, BigDecimal>>> DECIMAL_ROWS = new JsonType<>() { };
 
     protected abstract JsonMapper mapper(JsonOptions options, JsonModule... modules);

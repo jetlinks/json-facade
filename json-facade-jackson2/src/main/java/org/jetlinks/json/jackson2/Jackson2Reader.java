@@ -2,7 +2,9 @@ package org.jetlinks.json.jackson2;
 
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.ObjectReader;
+import org.jetlinks.json.JsonAttribute;
 import org.jetlinks.json.JsonReader;
 import org.jetlinks.json.JsonToken;
 import org.jetlinks.json.JsonType;
@@ -10,9 +12,23 @@ import org.jetlinks.json.JsonType;
 /** Borrowable cursor used both for standalone reads and nested custom adapter calls. */
 final class Jackson2Reader implements JsonReader {
     private JsonParser parser;
+    private ObjectReader valueReader;
+    private DeserializationContext context;
 
-    Jackson2Reader(JsonParser parser) {
+    Jackson2Reader(JsonParser parser, ObjectReader reader) {
         this.parser = parser;
+        valueReader = reader.without(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    }
+
+    Jackson2Reader(JsonParser parser, DeserializationContext context) {
+        this.parser = parser;
+        this.context = context;
+    }
+
+    @Override
+    public <T> T attribute(JsonAttribute<T> key) {
+        parser();
+        return key.cast(context == null ? valueReader.getAttributes().getAttribute(key) : context.getAttribute(key));
     }
 
     @Override
@@ -35,9 +51,13 @@ final class Jackson2Reader implements JsonReader {
         // A captured action can allocate per value when an iterator adds another call boundary.
         try {
             JsonParser input = parser();
-            ObjectMapper mapper = (ObjectMapper) input.getCodec();
-            return mapper.readerFor(mapper.constructType(type.type()))
-                    .without(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readValue(input);
+            if (context != null) {
+                T value = context.readValue(input, context.constructType(type.type()));
+                // 上下文绑定保留末令牌；中立游标统一清除，next() 再推进后继。
+                input.clearCurrentToken();
+                return value;
+            }
+            return valueReader.forType(type.type()).readValue(input);
         } catch (Exception failure) {
             throw Jackson2Support.failure(failure);
         }
@@ -53,6 +73,8 @@ final class Jackson2Reader implements JsonReader {
         // A retained closed cursor must not retain its caller's source or native buffers.
         JsonParser owned = parser;
         parser = null;
+        valueReader = null;
+        context = null;
         if (owned != null) {
             Jackson2Support.call(() -> {
                 owned.close();

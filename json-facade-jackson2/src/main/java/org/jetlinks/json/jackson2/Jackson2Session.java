@@ -23,17 +23,18 @@ final class Jackson2Session<T> extends AbstractReadSession<T> {
     private TokenBuffer record;
     private boolean exhausted;
 
-    Jackson2Session(JsonMapper mapper, ObjectMapper nativeMapper, JsonType<T> type,
+    Jackson2Session(JsonMapper mapper, ObjectMapper nativeMapper, ObjectReader preparedReader, JsonType<T> type,
                     JsonReadOptions options) throws IOException {
-        this(mapper, nativeMapper, type, options, false);
+        this(mapper, nativeMapper, preparedReader, type, options, false);
     }
 
-    Jackson2Session(JsonMapper mapper, ObjectMapper nativeMapper, JsonType<T> type,
+    Jackson2Session(JsonMapper mapper, ObjectMapper nativeMapper, ObjectReader preparedReader, JsonType<T> type,
                     JsonReadOptions options, boolean events) throws IOException {
         super(options, mapper.options().maxValueBytes(), events);
         this.mapper = nativeMapper;
-        reader = nativeMapper.readerFor(nativeMapper.constructType(type.type()));
-        parser = nativeMapper.getFactory().createNonBlockingByteBufferParser();
+        reader = preparedReader.forType(nativeMapper.constructType(type.type()));
+        parser = preparedReader.getFactory().createNonBlockingByteBufferParser();
+        reader.getConfig().initialize(parser);
         feeder = (ByteBufferFeeder) parser.getNonBlockingInputFeeder();
     }
 

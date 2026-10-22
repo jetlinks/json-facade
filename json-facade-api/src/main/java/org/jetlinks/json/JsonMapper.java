@@ -22,6 +22,23 @@ public interface JsonMapper {
     JsonOptions options();
 
     /**
+     * 准备可并发复用的操作映射器，不修改当前实例；空覆盖返回当前实例。
+     * 通用项和属性后值覆盖前值，原生回调累积并可在派生时重放。
+     * <p>重配置成本发生在本方法，尤其 null 包含策略可能需要隔离原生缓存；请复用结果。
+     * 同步、树、迭代器和流式操作使用相同配置，流式输出仍紧凑。
+     *
+     * @throws JsonException Provider 不支持、原生类型不匹配或配置冲突，类别为 CONFIGURATION；读写前失败
+     * @since 1.0.0
+     */
+    default JsonMapper withOptions(JsonOperationOptions overrides) {
+        if (java.util.Objects.requireNonNull(overrides, "overrides").isEmpty()) {
+            return this;
+        }
+        throw new JsonException(JsonException.Kind.CONFIGURATION,
+                "Provider does not support operation options");
+    }
+
+    /**
      * 向字节流写入一个根值；目标由调用方关闭。
      */
     void write(Object value, OutputStream output);

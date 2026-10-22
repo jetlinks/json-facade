@@ -175,6 +175,49 @@ JsonWriteOptions output = JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY)
 
 流操作有效值预算取 mapper 与操作 options 的较小值；两边默认独立为 8 MiB，仅增大 mapper 不会改变操作默认限制。同步整值 read/write/convert、整流累计字节、输入 chunk、并发和超时由宿主另行限制。重复键检测还会保存每个未闭合对象的已见字段名。
 
+### 单次操作配置
+
+`withOptions` 准备一个不可变、可并发复用的操作映射器。未指定项继承，显式 false 可以关闭已有配置；空配置返回原实例。对原映射器的调用不受影响。
+
+```java
+JsonMapper operation = mapper.withOptions(JsonOperationOptions.builder()
+    .omitNulls(false)       // 本次保留 null，仍尊重字段或类型注解
+    .pretty(true)          // 同步输出格式化
+    .build());
+String json = operation.write(value);
+JsonStreamMapper streams = JsonStreamMapper.of(operation); // 流输出仍紧凑
+```
+
+平台提供 losslessNumbers、failUnknownProperties、failDuplicateKeys、omitNulls、pretty 五项覆盖。预算仍由 JsonOptions 控制，分帧和嵌套数组选择仍用 JsonReadOptions / JsonWriteOptions。同步读写、convert、树的所属映射器、iterateArray、增量会话与传输适配器均沿用操作配置。
+
+业务配置使用类型化属性键，按键实例身份匹配；同名新键不能读取旧键属性。请将键定义为共享常量，在中立 Adapter 中通过 `reader.attribute(KEY)` / `writer.attribute(KEY)` 读取；缺失返回 null。属性也以相同键进入原生 binding context，只有消费该属性的 Adapter 或原生处理器才会产生行为。
+
+```java
+static final JsonAttribute<String> MASK_MODE =
+    JsonAttribute.of("mask-mode", String.class);
+
+JsonMapper masked = mapper.withOptions(JsonOperationOptions.builder()
+    .attribute(MASK_MODE, "partial")
+    .build());
+// Adapter.write 中：String mode = writer.attribute(MASK_MODE);
+```
+
+原生选项直接复用 Provider 的不可变 reader/writer，回调须返回 with/without 的结果：
+
+```java
+JsonMapper sorted = mapper.withOptions(JsonOperationOptions.builder()
+    .nativeWriter(com.fasterxml.jackson.databind.ObjectWriter.class,
+        writer -> writer.with(
+            com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS))
+    .build());
+```
+
+上述原生类型适用于 Jackson 2；Jackson 3 使用 tools.jackson 对应类型。nativeReader 方式相同。Provider 在准备时先检查整批类型，再按注册顺序执行回调；回调失败、返回 null、与显式通用项冲突或破坏调用方 I/O、单根值、解析预算契约时立即失败。回调须从提供的读写器派生，不得替换流工厂、绑定共享可变对象或修改已发布原生对象。
+
+连续调用 withOptions 时，通用项和同键属性后值覆盖前值；原生回调累积并可在派生时重放，须无外部副作用。容器不可变不等于属性值或原生处理器不可变，这些共享值仍须稳定且线程安全。
+
+请在配置确定后复用操作映射器。轻量覆盖复用原生缓存；null 包含策略会在准备阶段复制或重建原生映射器并隔离序列化缓存，首次绑定需要预热。数组 null 位置不会删除；框架不先转树删改字段，也不在逐条记录时执行配置回调。
+
 <a id="binding"></a>
 ## 对象绑定、泛型与转换
 
@@ -557,7 +600,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 257 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在两套 Provider 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 283 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含操作配置隔离、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在两套 Provider 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 
@@ -575,6 +618,7 @@ python3 scripts/run-streaming-benchmarks.py --tree
 python3 scripts/run-streaming-benchmarks.py --iterator
 python3 scripts/run-streaming-benchmarks.py --provider-read
 python3 scripts/run-streaming-benchmarks.py --published-write
+python3 scripts/run-streaming-benchmarks.py --operation-options
 python3 scripts/run-streaming-benchmarks.py --netty
 ```
 
@@ -616,6 +660,7 @@ Provider 可以注册 META-INF/services/org.jetlinks.json.spi.JsonProvider，或
 | [JsonMapper](../json-facade-api/src/main/java/org/jetlinks/json/JsonMapper.java) | read/convert 的 Class/JsonType、write、树工厂、游标/会话 |
 | [JsonType](../json-facade-api/src/main/java/org/jetlinks/json/JsonType.java) | of、listOf、mapOf、泛型捕获 |
 | [JsonOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonOptions.java) | 共享配置与 withX |
+| [JsonOperationOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonOperationOptions.java) / [JsonAttribute](../json-facade-api/src/main/java/org/jetlinks/json/JsonAttribute.java) | 操作覆盖、业务属性、原生 reader/writer 定制 |
 | [JsonValue](../json-facade-api/src/main/java/org/jetlinks/json/JsonValue.java) | 树访问、转换、断言、位置、复制 |
 | [JsonPointer](../json-facade-api/src/main/java/org/jetlinks/json/JsonPointer.java) | RFC 6901 路径 |
 | [JsonReader](../json-facade-api/src/main/java/org/jetlinks/json/JsonReader.java) / [JsonWriter](../json-facade-api/src/main/java/org/jetlinks/json/JsonWriter.java) | 同步游标 |

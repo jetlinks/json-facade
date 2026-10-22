@@ -10,6 +10,17 @@ package org.jetlinks.json;
 public interface JsonWriter extends AutoCloseable {
 
     /**
+     * 返回当前操作的类型化业务属性，缺失时为 null；嵌套 Adapter 继承相同上下文。
+     * 属性仅传递数据，不自动改变读写行为；调用方不得修改共享值。
+     *
+     * @since 1.0.0
+     */
+    default <T> T attribute(JsonAttribute<T> key) {
+        java.util.Objects.requireNonNull(key, "key");
+        return null;
+    }
+
+    /**
      * 写入对象开始令牌。
      */
     void beginObject();

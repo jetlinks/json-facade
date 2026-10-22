@@ -3,6 +3,7 @@ package org.jetlinks.json.jackson3;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.type.TypeReference;
 import org.jetlinks.json.JsonReader;
+import org.jetlinks.json.JsonAttribute;
 import org.jetlinks.json.JsonToken;
 import org.jetlinks.json.JsonType;
 
@@ -12,6 +13,12 @@ final class Jackson3Reader implements JsonReader {
 
     Jackson3Reader(JsonParser parser) {
         this.parser = parser;
+    }
+
+    @Override
+    public <T> T attribute(JsonAttribute<T> key) {
+        return key.cast(((tools.jackson.databind.DeserializationContext) parser().objectReadContext())
+                .getAttribute(key));
     }
 
     @Override
@@ -34,7 +41,10 @@ final class Jackson3Reader implements JsonReader {
         // Keep the hot binding call free of captured actions, even without JIT scalar replacement.
         try {
             JsonParser input = parser();
-            return input.objectReadContext().readValue(input, new NativeType<T>(type.type()));
+            T value = input.objectReadContext().readValue(input, new NativeType<T>(type.type()));
+            // 原生上下文不保证清除末令牌，统一履行中立游标的消费契约。
+            input.clearCurrentToken();
+            return value;
         } catch (Exception failure) {
             throw Jackson3Support.failure(failure);
         }

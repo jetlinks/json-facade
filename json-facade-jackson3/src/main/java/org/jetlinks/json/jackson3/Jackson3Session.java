@@ -22,16 +22,16 @@ final class Jackson3Session<T> extends AbstractReadSession<T> {
     private TokenBuffer record;
     private boolean exhausted;
 
-    Jackson3Session(JsonMapper mapper, ObjectMapper nativeMapper, JsonType<T> type,
+    Jackson3Session(JsonMapper mapper, ObjectMapper nativeMapper, ObjectReader preparedReader, JsonType<T> type,
                     JsonReadOptions options) throws tools.jackson.core.JacksonException {
-        this(mapper, nativeMapper, type, options, false);
+        this(mapper, nativeMapper, preparedReader, type, options, false);
     }
 
-    Jackson3Session(JsonMapper mapper, ObjectMapper nativeMapper, JsonType<T> type,
+    Jackson3Session(JsonMapper mapper, ObjectMapper nativeMapper, ObjectReader preparedReader, JsonType<T> type,
                     JsonReadOptions options, boolean events) throws tools.jackson.core.JacksonException {
         super(options, mapper.options().maxValueBytes(), events);
-        reader = nativeMapper.readerFor(nativeMapper.constructType(type.type()));
-        parser = nativeMapper.createNonBlockingByteBufferParser();
+        reader = preparedReader.forType(nativeMapper.constructType(type.type()));
+        parser = reader.createNonBlockingByteBufferParser();
         feeder = (ByteBufferFeeder) parser.nonBlockingInputFeeder();
     }
 

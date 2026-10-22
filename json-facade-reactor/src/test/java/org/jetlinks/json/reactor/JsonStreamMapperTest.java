@@ -19,6 +19,7 @@ import org.jetlinks.json.Json;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
+import org.jetlinks.json.JsonOperationOptions;
 import org.jetlinks.json.JsonReadOptions;
 import org.jetlinks.json.JsonReader;
 import org.jetlinks.json.JsonType;
@@ -46,6 +47,35 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JsonStreamMapperTest {
+    @ParameterizedTest
+    @MethodSource("providers")
+    void preparedOperationIsReusedButReactiveResourcesStaySubscriptionLocal(JsonProvider provider) {
+        JsonMapper base = Json.builder().provider(provider).build();
+        JsonMapper operation = base.withOptions(JsonOperationOptions.builder()
+                .pretty(true).omitNulls(true).failUnknownProperties(true).build());
+        JsonStreamMapper streams = JsonStreamMapper.of(operation);
+        Map<String, Object> value = new java.util.LinkedHashMap<>();
+        value.put("keep", 1);
+        value.put("missing", null);
+        Flux<byte[]> output = streams.writeBytes(Flux.just(value, value),
+                JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY).withChunkSize(4));
+        assertEquals("[{\"keep\":1},{\"keep\":1}]", join(output));
+        assertEquals("[{\"keep\":1},{\"keep\":1}]", join(output));
+        assertTrue(operation.write(value).contains("\n"));
+        assertTrue(base.write(value).contains("\"missing\":null"));
+        var input = streams.readBytes(Flux.just(bytes("[{\"keep\":1}]")), OperationValue.class,
+                JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS));
+        StepVerifier.create(input).expectNext(new OperationValue(1)).verifyComplete();
+        StepVerifier.create(input).expectNext(new OperationValue(1)).verifyComplete();
+        StepVerifier.create(streams.readBytes(Flux.just(bytes("[{\"keep\":1,\"extra\":2}]")), OperationValue.class,
+                JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS))).expectError(JsonException.class).verify();
+        StepVerifier.create(streams.writeBytes(Flux.just(value).concatWith(Flux.never()),
+                JsonWriteOptions.of(JsonWriteOptions.Format.ARRAY).withChunkSize(1)))
+                .thenRequest(1).expectNextCount(1).thenCancel().verify();
+    }
+
+    record OperationValue(int keep) { }
+
     @Test
     void ambiguousDefaultDiscoveryCanBeConfiguredAndNamedMappersKeepIndependentPolicies() {
         JsonException failure = assertThrows(JsonException.class, Json::global);
