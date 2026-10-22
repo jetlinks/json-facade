@@ -46,6 +46,28 @@ public interface JsonMapper {
     }
     /** Create a cursor at the start of a caller-owned source. */
     JsonReader reader(InputStream input);
+    /** Lazily iterate the direct elements of one root array, using configured Provider binding.
+     * Creation validates arguments without reading input. hasNext may block on the source but
+     * does not bind the next element; next binds only that element, including Java null.
+     * Exhaustion validates EOF and closes parser state; parse/binding failure also closes it.
+     * Always close early-stopped iterations. The input remains caller-owned in every case.
+     * Native token/depth limits apply; incremental-session maxValueBytes does not apply here.
+     * @param input caller-owned source, never null
+     * @param type element type, never null
+     * @param <T> element type
+     * @return operation-local iterator, not thread-safe
+     * @since 1.0.0
+     * @see CloseableIterator
+     */
+    default <T> CloseableIterator<T> iterateArray(InputStream input, JsonType<T> type) {
+        return new org.jetlinks.json.internal.JsonArrayIterator<>(this, input, type);
+    }
+    /** Class counterpart of iterateArray(InputStream, JsonType), with the same ownership and limits.
+     * @since 1.0.0
+     */
+    default <T> CloseableIterator<T> iterateArray(InputStream input, Class<T> type) {
+        return iterateArray(input, JsonType.of(type));
+    }
     /** Create a token writer over a caller-owned target. */
     JsonWriter writer(OutputStream output);
     /** Compact reusable writer without an implicit root separator. Caller owns framing and target.

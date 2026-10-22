@@ -38,6 +38,12 @@ var values = mapper.read("[{\"count\":3}]",
 
 Built mappers are immutable and safe to share. Construct configuration before publishing the instance. Each reader, writer and incremental session has its own state. Supplied InputStream/Reader/OutputStream/Writer remain caller-owned.
 
+Synchronous root-array input can use `mapper.iterateArray(input, Item.class)`
+(or a `JsonType`) in try-with-resources. Its `CloseableIterator` binds one element
+at a time, validates trailing input on exhaustion and releases parser state on
+close or parsing failure. The caller retains input ownership. Native token/depth
+limits apply; this synchronous entry point does not apply session record-byte budgets.
+
 ## Default and named configurations
 
 `Json.global()` returns the shared default mapper directly. Configure it before first use, or let it lazily discover one unambiguous Provider. Register independent configurations under stable application names:

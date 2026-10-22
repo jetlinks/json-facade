@@ -30,7 +30,8 @@
 | 配置、缓存、消息、DTO | JsonMapper read/write/convert | 一个完整值 |
 | 嵌套泛型 | JsonType | 一个完整值 |
 | 动态小文档 | createObject/createArray/readTree | 整棵树 |
-| 同步文件逐项处理 | JsonReader / JsonWriter | 当前 token 或绑定值 |
+| 同步根数组逐项读取 | iterateArray / CloseableIterator | 当前元素 |
+| 同步结构读写 | JsonReader / JsonWriter | 当前 token 或绑定值 |
 | 根数组、逐行记录 | ARRAY_ELEMENTS / NDJSON | 一个记录 |
 | 包装文档中的数组 | Pointer selection | 一个选中元素 |
 | 超大复杂文档 | readEvents/writeEvents | 一个 token 或 value 事件 |
@@ -298,30 +299,29 @@ static Item readFile(JsonMapper mapper, java.nio.file.Path path) throws java.io.
 }
 ```
 
-根数组逐项读取，不收集整个文件：
+根数组可直接使用可关闭迭代器，不收集整个文件：
 
 ```java
 static void consumeArray(JsonMapper mapper, java.io.InputStream input,
                          java.util.function.Consumer<Item> consume) {
-    try (JsonReader reader = mapper.reader(input)) {
-        if (reader.next() != JsonToken.START_ARRAY) {
-            throw new IllegalArgumentException("Expected a root array");
-        }
-        JsonToken token;
-        while ((token = reader.next()) != JsonToken.END_ARRAY) {
-            if (token == null) {
-                throw new IllegalArgumentException("Incomplete array");
-            }
-            consume.accept(reader.readValue(Item.class));
-        }
-        if (reader.next() != null) {
-            throw new IllegalArgumentException("Unexpected trailing value");
+    try (CloseableIterator<Item> iterator = mapper.iterateArray(input, Item.class)) {
+        while (iterator.hasNext()) {
+            consume.accept(iterator.next());
         }
     }
 }
 ```
 
-readValue/skipValue 消费当前完整值，下次 next 返回后继；next 返回 null 才是 EOF。text 读取字段名或标量文本。写出可组合结构与绑定：
+泛型元素可传 JsonType，例如 iterateArray(input, new JsonType<List<Item>>() { })。
+创建迭代器不读取输入；hasNext 只推进到下个元素 token，不提前绑定，反复调用不重复推进；
+next 返回一个完整元素，也可能是 Java null。耗尽后 next 抛 NoSuchElementException。
+完整迭代校验数组闭合与尾部 EOF，耗尽/解析失败会释放解析器；提前 close 只校验已读前缀。
+始终使用 try-with-resources，消费者异常时同样会清理；传入的 input 仍由调用方关闭。
+这是同步、可能阻塞的根数组入口，不支持 NDJSON/selection，继承原生 token/depth 限制，
+不套用增量 session 的 maxValueBytes；单个元素仍须有界。
+
+手动 token 处理继续用 mapper.reader(input)：readValue/skipValue 消费当前完整值，下次 next
+返回后继，next 返回 null 才是 EOF，text 读取字段名或标量文本。写出可组合结构与绑定：
 
 ```java
 static void writeArray(JsonMapper mapper, java.io.OutputStream output, Iterable<Item> items) {
@@ -510,6 +510,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 | Mapper / stream mapper | 构建后共享，无每次操作状态 |
 | Builder / 树 / cursor / session | 不并发修改；cursor/session 按操作关闭 |
 | 调用方同步 IO | 调用方关闭，底层可能阻塞 |
+| CloseableIterator | 按操作使用；耗尽/解析失败自动关闭解析器，提前停止须 close，不关闭输入 |
 | 输入 byte[] | 发布后保持不可变，不复用 |
 | 输入 ByteBuffer | 适配器 onNext 内复制；之前的异步队列由宿主保证有效 |
 | 手动 session 的 ByteBuffer | 借用至 needsInput 或 close |
@@ -539,7 +540,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 233 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 249 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过。同步迭代器在两套 Provider 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 
@@ -554,6 +555,7 @@ python3 scripts/run-databuffer-stress.py
 python3 scripts/run-databuffer-stress.py --release-only
 python3 scripts/run-streaming-benchmarks.py
 python3 scripts/run-streaming-benchmarks.py --tree
+python3 scripts/run-streaming-benchmarks.py --iterator
 python3 scripts/run-streaming-benchmarks.py --provider-read
 python3 scripts/run-streaming-benchmarks.py --published-write
 python3 scripts/run-streaming-benchmarks.py --netty
@@ -600,6 +602,7 @@ Provider 可以注册 META-INF/services/org.jetlinks.json.spi.JsonProvider，或
 | [JsonValue](../json-facade-api/src/main/java/org/jetlinks/json/JsonValue.java) | 树访问、转换、断言、位置、复制 |
 | [JsonPointer](../json-facade-api/src/main/java/org/jetlinks/json/JsonPointer.java) | RFC 6901 路径 |
 | [JsonReader](../json-facade-api/src/main/java/org/jetlinks/json/JsonReader.java) / [JsonWriter](../json-facade-api/src/main/java/org/jetlinks/json/JsonWriter.java) | 同步游标 |
+| [CloseableIterator](../json-facade-api/src/main/java/org/jetlinks/json/CloseableIterator.java) | iterateArray 的按需根数组迭代 |
 | [JsonReadSession](../json-facade-api/src/main/java/org/jetlinks/json/JsonReadSession.java) | feed/read/endInput/close、Receiver |
 | [JsonReadOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonReadOptions.java) / [JsonWriteOptions](../json-facade-api/src/main/java/org/jetlinks/json/JsonWriteOptions.java) | 分帧、选择、null、预算 |
 | [JsonEvent](../json-facade-api/src/main/java/org/jetlinks/json/JsonEvent.java) | 结构 token / 有界值 |

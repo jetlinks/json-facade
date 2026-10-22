@@ -31,10 +31,13 @@ final class Jackson3Reader implements JsonReader {
 
     @Override
     public <T> T readValue(JsonType<T> type) {
-        return Jackson3Support.call(() -> {
+        // Keep the hot binding call free of captured actions, even without JIT scalar replacement.
+        try {
             JsonParser input = parser();
             return input.objectReadContext().readValue(input, new NativeType<T>(type.type()));
-        });
+        } catch (Exception failure) {
+            throw Jackson3Support.failure(failure);
+        }
     }
 
     @Override

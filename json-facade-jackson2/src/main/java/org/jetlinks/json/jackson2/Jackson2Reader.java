@@ -32,12 +32,15 @@ final class Jackson2Reader implements JsonReader {
 
     @Override
     public <T> T readValue(JsonType<T> type) {
-        return Jackson2Support.call(() -> {
+        // A captured action can allocate per value when an iterator adds another call boundary.
+        try {
             JsonParser input = parser();
             ObjectMapper mapper = (ObjectMapper) input.getCodec();
             return mapper.readerFor(mapper.constructType(type.type()))
                     .without(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readValue(input);
-        });
+        } catch (Exception failure) {
+            throw Jackson2Support.failure(failure);
+        }
     }
 
     @Override

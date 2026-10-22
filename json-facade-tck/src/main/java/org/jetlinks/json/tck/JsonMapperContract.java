@@ -3,6 +3,7 @@ package org.jetlinks.json.tck;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.StringReader;
 import java.io.StringWriter;
 import java.math.BigDecimal;
@@ -13,9 +14,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import org.jetlinks.json.JsonException;
+import org.jetlinks.json.CloseableIterator;
 import org.jetlinks.json.JsonEvent;
 import org.jetlinks.json.JsonArray;
 import org.jetlinks.json.JsonObject;
@@ -465,6 +468,111 @@ public abstract class JsonMapperContract extends JsonTreeContract {
     }
 
     @Test
+    void arrayIteratorBindsNestedGenericValuesAndPreservesNull() {
+        TrackedInput input = new TrackedInput("[[{\"n\":1.2500}],null,[]]".getBytes(StandardCharsets.UTF_8));
+        try (CloseableIterator<List<Map<String, BigDecimal>>> iterator = mapper().iterateArray(input, DECIMAL_ROWS)) {
+            assertEquals(List.of(Map.of("n", new BigDecimal("1.2500"))), iterator.next());
+            assertTrue(iterator.hasNext());
+            assertTrue(iterator.hasNext());
+            assertNull(iterator.next());
+            assertEquals(List.of(), iterator.next());
+            assertFalse(iterator.hasNext());
+            assertFalse(iterator.hasNext());
+            assertThrows(NoSuchElementException.class, iterator::next);
+        }
+        assertFalse(input.closed);
+    }
+
+    @Test
+    void arrayIteratorDefersIoAndBindingAndAllowsEarlyClose() {
+        AtomicInteger bindings = new AtomicInteger();
+        byte[] bytes = "[null,\"first\",invalid]".getBytes(StandardCharsets.UTF_8);
+        TrackedInput input = new TrackedInput(bytes);
+        JsonMapper json = mapper(JsonOptions.DEFAULT, countingLabels(bindings));
+        try (CloseableIterator<Label> iterator = json.iterateArray(input, Label.class)) {
+            assertEquals(bytes.length, input.available());
+            assertTrue(iterator.hasNext());
+            assertNull(iterator.next());
+            assertTrue(iterator.hasNext());
+            assertTrue(iterator.hasNext());
+            assertEquals(0, bindings.get());
+            assertEquals(new Label("first"), iterator.next());
+            assertEquals(1, bindings.get());
+        }
+        assertFalse(input.closed);
+    }
+
+    @Test
+    void arrayIteratorRejectsWrongRootsMalformedArraysAndTrailingInput() {
+        JsonMapper json = mapper();
+        for (String source : List.of("", "null", "{}", "1", "[1", "[1,]", "[1] true", "[1] junk")) {
+            TrackedInput input = new TrackedInput(source.getBytes(StandardCharsets.UTF_8));
+            try (CloseableIterator<Integer> iterator = json.iterateArray(input, Integer.class)) {
+                JsonException failure = assertThrows(JsonException.class, () -> iterator.forEachRemaining(value -> { }));
+                assertEquals(JsonException.Kind.SYNTAX, failure.kind());
+                assertFalse(iterator.hasNext());
+                assertThrows(NoSuchElementException.class, iterator::next);
+            }
+            assertFalse(input.closed);
+        }
+        try (CloseableIterator<Integer> empty = json.iterateArray(
+                new ByteArrayInputStream("[] \n".getBytes(StandardCharsets.UTF_8)), Integer.class)) {
+            assertFalse(empty.hasNext());
+            assertThrows(NoSuchElementException.class, empty::next);
+        }
+    }
+
+    @Test
+    void arrayIteratorPreservesConfiguredTreesUnknownFieldAndDepthPolicies() {
+        try (CloseableIterator<JsonValue> iterator = mapper().iterateArray(
+                new ByteArrayInputStream("[null,{\"port\":\"1883\"}]".getBytes(StandardCharsets.UTF_8)), JsonValue.class)) {
+            assertTrue(iterator.next().isNull());
+            JsonValue value = iterator.next();
+            assertEquals(1883, value.get("port").asInt());
+            assertFalse(iterator.hasNext());
+            assertEquals(1883, value.get("port").asInt());
+        }
+        JsonMapper strict = mapper(JsonOptions.DEFAULT.withFailUnknownProperties(true));
+        try (CloseableIterator<Item> iterator = strict.iterateArray(
+                new ByteArrayInputStream("[{\"value\":1,\"extra\":2}]".getBytes(StandardCharsets.UTF_8)), Item.class)) {
+            assertEquals(JsonException.Kind.BINDING, assertThrows(JsonException.class, iterator::next).kind());
+            assertFalse(iterator.hasNext());
+        }
+        JsonMapper shallow = mapper(JsonOptions.DEFAULT.withMaxDepth(1));
+        try (CloseableIterator<Object> iterator = shallow.iterateArray(
+                new ByteArrayInputStream("[[1]]".getBytes(StandardCharsets.UTF_8)), Object.class)) {
+            assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, iterator::hasNext).kind());
+            assertFalse(iterator.hasNext());
+        }
+    }
+
+    @Test
+    void arrayIteratorPreservesIoFailuresWithoutTakingSourceOwnership() {
+        IOException failure = new IOException("iterator input");
+        AtomicInteger closes = new AtomicInteger();
+        InputStream input = failingInput(failure, closes);
+        JsonMapper json = mapper();
+        JsonException cursorFailure = assertThrows(JsonException.class, () -> {
+            try (JsonReader reader = json.reader(failingInput(failure, closes))) {
+                reader.next();
+            }
+        });
+        try (CloseableIterator<Integer> iterator = json.iterateArray(input, Integer.class)) {
+            JsonException actual = assertThrows(JsonException.class, iterator::hasNext);
+            assertEquals(JsonException.Kind.IO, actual.kind());
+            assertEquals(cursorFailure.getCause().getClass(), actual.getCause().getClass());
+            // Jackson 3 adds its native IO wrapper; retain it exactly as the existing cursor does.
+            Throwable root = actual;
+            while (root.getCause() != null) {
+                root = root.getCause();
+            }
+            assertSame(failure, root);
+            assertFalse(iterator.hasNext());
+        }
+        assertEquals(0, closes.get());
+    }
+
+    @Test
     void cursorBindsCurrentValueAndSkipsUnrelatedContainers() {
         JsonMapper json = mapper();
         TrackedInput input = new TrackedInput("{\"ignored\":[1,{}],\"item\":{\"value\":5}}".getBytes(StandardCharsets.UTF_8));
@@ -895,6 +1003,45 @@ public abstract class JsonMapperContract extends JsonTreeContract {
             labels.configure(context);
             labels.configure(context);
         }
+    }
+
+    private static JsonModule countingLabels(AtomicInteger bindings) {
+        return new JsonModule() {
+            @Override
+            public String id() {
+                return "iterator-labels";
+            }
+
+            @Override
+            public void configure(JsonModuleContext context) {
+                context.add(Label.class, new JsonAdapter<>() {
+                    @Override
+                    public void write(Label value, JsonWriter writer) {
+                        writer.string(value.value());
+                    }
+
+                    @Override
+                    public Label read(JsonReader reader) {
+                        bindings.incrementAndGet();
+                        return new Label(reader.readValue(String.class));
+                    }
+                });
+            }
+        };
+    }
+
+    private static InputStream failingInput(IOException failure, AtomicInteger closes) {
+        return new InputStream() {
+            @Override
+            public int read() throws IOException {
+                throw failure;
+            }
+
+            @Override
+            public void close() {
+                closes.incrementAndGet();
+            }
+        };
     }
 
     private static final class BrokenOutput extends java.io.OutputStream {
