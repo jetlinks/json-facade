@@ -140,7 +140,7 @@ final class Jackson3Mapper implements JsonMapper {
     @Override
     public JsonReader reader(InputStream input) {
         java.util.Objects.requireNonNull(input, "input");
-        return Jackson3Support.call(() -> new Jackson3Reader(valueReader.createParser(input)));
+        return Jackson3Support.call(() -> new Jackson3Reader(valueReader.createParser(input), valueReader));
     }
 
     @Override

@@ -14,4 +14,11 @@
         <Method name="mapper" params="" returns="org.jetlinks.json.JsonMapper"/>
         <Bug pattern="EI_EXPOSE_REP"/>
     </Match>
+    <!-- This negative contract fixture intentionally creates a self-containing List
+         to verify bounded rejection. Production collection checks stay enabled. -->
+    <Match>
+        <Class name="org.jetlinks.json.tck.JsonTreeContract"/>
+        <Method name="structuralCopiesBoundCyclesAndDeepAcyclicInputs"/>
+        <Bug pattern="IL_CONTAINER_ADDED_TO_ITSELF"/>
+    </Match>
 </FindBugsFilter>

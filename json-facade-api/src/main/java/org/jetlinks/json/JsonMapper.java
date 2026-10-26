@@ -167,6 +167,7 @@ public interface JsonMapper {
      * 调用 {@code next()} 定位到值的首令牌后，再用 {@code readValue} 绑定或 {@code skipValue} 跳过。
      * 完整示例见 {@link JsonReader}；只需遍历根数组时优先用 {@link #iterateArray(InputStream, Class)}。
      * 关闭游标不关闭调用方输入流。
+     * 独立游标的每次 readValue 使用独立对象 ID 上下文；跨值共享引用请作为一个完整值绑定。
      */
     JsonReader reader(InputStream input);
 
@@ -184,6 +185,7 @@ public interface JsonMapper {
      * }
      * }</pre>
      * 泛型元素可传 {@code JsonType.listOf(JsonType.of(Integer.class))}，读取数组中的子数组。
+     * 对象 ID 仅在当前元素内部有效；需要跨元素共享引用时，应将整个数组作为一个值读取。
      * <p>创建时不读取输入；{@code hasNext()} 可等待输入但不绑定元素，{@code next()} 仅绑定一个元素，
      * 结果可以为 Java {@code null}。耗尽时校验闭合及 EOF；耗尽或解析、绑定失败时释放解析器。
      * <p>提前停止仍须关闭迭代器，建议使用 try-with-resources；任何情况下均不关闭调用方输入流。
@@ -301,6 +303,7 @@ public interface JsonMapper {
      * // source 仍只有 id；value 含 id 和 online
      * }</pre>
      * 递归复制容器并保留显式 null；源须为结构工厂支持的无环 JSON 数据，POJO 请用 {@link #toTree(Object)}。
+     * 复制受当前 maxDepth 限制，超深或循环容器在上限处以 LIMIT 失败。
      * 只读访问且要避免复制时用 {@link #wrap(java.util.Map)}。
      */
     default JsonObject createObject(java.util.Map<String, ?> values) {
@@ -326,6 +329,7 @@ public interface JsonMapper {
     /**
      * 将 Collection 复制为可修改数组，例如 {@code JsonArray values = mapper.createArray(java.util.List.of(1, 2));}。
      * 修改数组不影响源集合；递归复制嵌套容器并保留 null。
+     * 复制受当前 maxDepth 限制，超深或循环容器在上限处以 LIMIT 失败。
      * 元素须为结构工厂支持的 JSON 数据，POJO 集合请用 {@link #toTree(Object)}。
      */
     default JsonArray createArray(java.util.Collection<?> values) {

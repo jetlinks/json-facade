@@ -159,7 +159,7 @@ JsonOptions 是不可变 record，九个字段均有具名 withX 副本方法，
 | failDuplicateKeys | false | 原生解析器检测重复字段 |
 | omitNulls | false | 原生绑定的 null 属性策略 |
 | pretty | false | 同步输出美化；流输出始终 compact |
-| maxDepth | 256 | 原生嵌套深度 |
+| maxDepth | 256 | 原生读写及结构树复制的容器嵌套深度 |
 | maxStringLength | 8 MiB | 原生字符串 token 长度 |
 | maxNumberLength | 1000 | 原生数字 token 长度 |
 | maxValueBytes | 8 MiB | 增量物化记录/流输出当前值字节预算 |
@@ -398,6 +398,12 @@ static void writeArray(JsonMapper mapper, java.io.OutputStream output, Iterable<
 
 writer 遵循 pretty，compactWriter/writeCompact 只为本次操作使用 compact。number("1.2300e+10") 校验完整数字语法，不经过 double，也不是 raw 注入。关闭不补残缺括号；多个根值的分隔由调用方负责。
 
+循环 POJO 的 ID 编码、解析及冲突规则由 Provider 管理。Jackson 可使用 `@JsonIdentityInfo`，也可通过 `configureNative` 注册 Mixin，门面不定义 `$id/$ref` 协议。普通 JSON、JsonPointer 和 JsonValue 不会自动解析引用字段。
+
+独立游标的每次 readValue、iterator 的每个元素以及增量/响应式的每条记录，都使用独立绑定上下文：记录内部可有引用，记录之间不能靠 ID 相连。需要跨元素共享引用时，用一次 read 绑定整个数组；这会物化整个结果。Adapter 内嵌套读写保留当前上下文。逐次 writer.value 写出也使用逐值作用域，不等同于一次 write 整个对象图。
+
+结构树的 createObject/createArray、插入、deepCopy/toJavaValue 沿用所属映射器的 maxDepth，静态 JsonValue 工厂使用默认 256。复制从本次根容器计数，插入时包括目标容器；标量不增加深度。循环或过深数据在上限处以 LIMIT 失败，共享但无环的子容器正常复制。wrap 创建仍为 O(1)，仅在显式复制/导出时执行这一检查。
+
 <a id="read-stream"></a>
 ## Reactor 流式读取
 
@@ -600,7 +606,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 283 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含操作配置隔离、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在两套 Provider 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 293 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含操作配置隔离、结构复制深度/环限制、原生对象 ID 作用域、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在两套 Provider 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 

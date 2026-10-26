@@ -1,7 +1,9 @@
 package org.jetlinks.json.jackson3;
 
 import tools.jackson.core.JsonParser;
-import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.ObjectReader;
+import tools.jackson.databind.DeserializationContext;
 import org.jetlinks.json.JsonReader;
 import org.jetlinks.json.JsonAttribute;
 import org.jetlinks.json.JsonToken;
@@ -10,15 +12,23 @@ import org.jetlinks.json.JsonType;
 /** Borrowable cursor used both for standalone reads and nested custom adapter calls. */
 final class Jackson3Reader implements JsonReader {
     private JsonParser parser;
+    private ObjectReader valueReader;
+    private DeserializationContext context;
 
-    Jackson3Reader(JsonParser parser) {
+    Jackson3Reader(JsonParser parser, ObjectReader reader) {
         this.parser = parser;
+        valueReader = reader.without(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    }
+
+    Jackson3Reader(JsonParser parser, DeserializationContext context) {
+        this.parser = parser;
+        this.context = context;
     }
 
     @Override
     public <T> T attribute(JsonAttribute<T> key) {
-        return key.cast(((tools.jackson.databind.DeserializationContext) parser().objectReadContext())
-                .getAttribute(key));
+        parser();
+        return key.cast(context == null ? valueReader.getAttributes().getAttribute(key) : context.getAttribute(key));
     }
 
     @Override
@@ -41,7 +51,11 @@ final class Jackson3Reader implements JsonReader {
         // Keep the hot binding call free of captured actions, even without JIT scalar replacement.
         try {
             JsonParser input = parser();
-            T value = input.objectReadContext().readValue(input, new NativeType<T>(type.type()));
+            if (valueReader != null) {
+                // 独立游标每值使用原生 reader 的新上下文，避免对象 ID 跨记录保留；嵌套 Adapter 沿用当前上下文。
+                return valueReader.forType(valueReader.typeFactory().constructType(type.type())).readValue(input);
+            }
+            T value = context.readValue(input, context.constructType(type.type()));
             // 原生上下文不保证清除末令牌，统一履行中立游标的消费契约。
             input.clearCurrentToken();
             return value;
@@ -60,6 +74,8 @@ final class Jackson3Reader implements JsonReader {
         // A retained closed cursor must not retain its caller's source or native buffers.
         JsonParser owned = parser;
         parser = null;
+        valueReader = null;
+        context = null;
         if (owned != null) {
             Jackson3Support.call(() -> {
                 owned.close();
@@ -93,17 +109,4 @@ final class Jackson3Reader implements JsonReader {
         };
     }
 
-    /** Resolves the neutral Type within the current configured binding context. */
-    private static final class NativeType<T> extends TypeReference<T> {
-        private final java.lang.reflect.Type type;
-
-        private NativeType(java.lang.reflect.Type type) {
-            this.type = type;
-        }
-
-        @Override
-        public java.lang.reflect.Type getType() {
-            return type;
-        }
-    }
 }

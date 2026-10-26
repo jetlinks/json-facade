@@ -16,6 +16,7 @@ import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonFailure;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonObject;
+import org.jetlinks.json.JsonOptions;
 import org.jetlinks.json.JsonPointer;
 import org.jetlinks.json.JsonType;
 import org.jetlinks.json.JsonValue;
@@ -75,12 +76,12 @@ public final class JsonValues {
     }
 
     public static JsonValue of(Object value) {
-        return value instanceof JsonValue node ? node : wrap(copy(value), null, JsonPath.ROOT);
+        return value instanceof JsonValue node ? node : wrap(copy(value, null, 0), null, JsonPath.ROOT);
     }
 
     /** Copy a binding result and attach its configured mapper, including for nested views. */
     public static JsonValue of(Object value, JsonMapper mapper) {
-        return wrap(copy(value), Objects.requireNonNull(mapper, "mapper"), JsonPath.ROOT);
+        return wrap(copy(value, mapper, 0), Objects.requireNonNull(mapper, "mapper"), JsonPath.ROOT);
     }
 
     /** Borrow only for immediate synchronous binding. Providers must not expose or retain this graph. */
@@ -188,20 +189,32 @@ public final class JsonValues {
         return new BaseValue(borrowed ? scalar(value) : value, false, mapper, path);
     }
 
-    private static Object copy(Object value) {
+    private static Object copy(Object value, JsonMapper mapper, int depth) {
+        return copy(value, depth, mapper == null ? JsonOptions.DEFAULT.maxDepth() : mapper.options().maxDepth());
+    }
+
+    private static Object copy(Object value, int depth, int maxDepth) {
         if (value instanceof JsonValue node) {
-            return copy(bindingValue(node));
+            return copy(bindingValue(node), depth, maxDepth);
         }
         if (value instanceof Map<?, ?> map) {
-            return copyObject(map);
+            return copyObject(map, nestedDepth(depth, maxDepth), maxDepth);
         }
         if (value instanceof Collection<?> collection) {
-            return copyCollection(collection);
+            return copyCollection(collection, nestedDepth(depth, maxDepth), maxDepth);
         }
         if (value != null && value.getClass().isArray()) {
-            return copyArray(value);
+            return copyArray(value, nestedDepth(depth, maxDepth), maxDepth);
         }
         return scalar(value);
+    }
+
+    private static int nestedDepth(int depth, int maxDepth) {
+        // 结构复制不经过 Provider；复用深度预算同时限制深树和环，不建立另一套对象引用表。
+        if (depth >= maxDepth) {
+            throw new JsonException(JsonException.Kind.LIMIT, "JSON tree copy exceeds maxDepth: " + maxDepth);
+        }
+        return depth + 1;
     }
 
     private static Object scalar(Object value) {
@@ -217,30 +230,30 @@ public final class JsonValues {
         throw new IllegalArgumentException("Use JsonMapper.toTree for Java objects");
     }
 
-    private static Map<String, Object> copyObject(Map<?, ?> source) {
+    private static Map<String, Object> copyObject(Map<?, ?> source, int depth, int maxDepth) {
         Map<String, Object> result = new LinkedHashMap<>();
         for (Map.Entry<?, ?> entry : source.entrySet()) {
             if (!(entry.getKey() instanceof String name)) {
                 throw new IllegalArgumentException("JSON object keys must be Strings");
             }
-            result.put(name, copy(entry.getValue()));
+            result.put(name, copy(entry.getValue(), depth, maxDepth));
         }
         return result;
     }
 
-    private static List<Object> copyCollection(Collection<?> source) {
+    private static List<Object> copyCollection(Collection<?> source, int depth, int maxDepth) {
         List<Object> result = new ArrayList<>(source.size());
         for (Object child : source) {
-            result.add(copy(child));
+            result.add(copy(child, depth, maxDepth));
         }
         return result;
     }
 
-    private static List<Object> copyArray(Object source) {
+    private static List<Object> copyArray(Object source, int depth, int maxDepth) {
         int length = Array.getLength(source);
         List<Object> result = new ArrayList<>(length);
         for (int i = 0; i < length; i++) {
-            result.add(copy(Array.get(source, i)));
+            result.add(copy(Array.get(source, i), depth, maxDepth));
         }
         return result;
     }
@@ -302,7 +315,7 @@ public final class JsonValues {
         @Override
         public Object toJavaValue() {
             checkPresent();
-            return copy(value);
+            return copy(value, mapper, 0);
         }
 
         @Override
@@ -377,7 +390,7 @@ public final class JsonValues {
             if (missing) {
                 return mapper == null ? JsonValue.MISSING : new BaseValue(null, true, mapper, JsonPath.ROOT);
             }
-            return wrap(copy(value), mapper, JsonPath.ROOT);
+            return wrap(copy(value, mapper, 0), mapper, JsonPath.ROOT);
         }
     }
 
@@ -401,7 +414,7 @@ public final class JsonValues {
         @Override
         public JsonObject put(String name, Object value) {
             checkWritable();
-            values.put(Objects.requireNonNull(name, "name"), copy(value));
+            values.put(Objects.requireNonNull(name, "name"), copy(value, mapper, 1));
             return this;
         }
 
@@ -442,14 +455,14 @@ public final class JsonValues {
         @Override
         public JsonArray add(Object value) {
             checkWritable();
-            values.add(copy(value));
+            values.add(copy(value, mapper, 1));
             return this;
         }
 
         @Override
         public JsonArray set(int index, Object value) {
             checkWritable();
-            values.set(index, copy(value));
+            values.set(index, copy(value, mapper, 1));
             return this;
         }
 

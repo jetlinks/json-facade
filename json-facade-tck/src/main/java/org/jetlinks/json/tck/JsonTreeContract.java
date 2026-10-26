@@ -45,6 +45,64 @@ public abstract class JsonTreeContract {
     protected abstract JsonMapper mapper(JsonOptions options, JsonModule... modules);
 
     @Test
+    void structuralCopiesBoundCyclesAndDeepAcyclicInputs() {
+        JsonMapper json = mapper(JsonOptions.DEFAULT.withMaxDepth(8));
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("self", map);
+        List<Object> list = new ArrayList<>();
+        list.add(list);
+        Object[] array = new Object[1];
+        array[0] = array;
+        List<Object> arrayHolder = new ArrayList<>();
+        arrayHolder.add(array);
+        Map<String, Object> mixed = new LinkedHashMap<>();
+        List<Object> mixedList = new ArrayList<>();
+        mixed.put("children", mixedList);
+        mixedList.add(mixed);
+        assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, () -> json.createObject(map)).kind());
+        assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, () -> json.createArray(list)).kind());
+        assertEquals(JsonException.Kind.LIMIT,
+                assertThrows(JsonException.class, () -> json.createArray(arrayHolder)).kind());
+        assertEquals(JsonException.Kind.LIMIT,
+                assertThrows(JsonException.class, () -> json.createObject(mixed)).kind());
+        JsonObject borrowed = json.wrap(map);
+        assertEquals(1, borrowed.getObject("self").size());
+        assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, borrowed::deepCopy).kind());
+        assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, borrowed::toJavaValue).kind());
+        Map<String, ?> deep = Map.of();
+        for (int i = 0; i < 10000; i++) {
+            deep = Map.of("child", deep);
+        }
+        Map<String, ?> source = deep;
+        assertEquals(JsonException.Kind.LIMIT,
+                assertThrows(JsonException.class, () -> json.createObject(source)).kind());
+    }
+
+    @Test
+    void structuralDepthCountsContainersAndKeepsFailedMutationsAtomic() {
+        JsonMapper shallow = mapper(JsonOptions.DEFAULT.withMaxDepth(1));
+        JsonObject object = shallow.createObject(Map.of("keep", 1));
+        JsonArray array = shallow.createArray(List.of(1));
+        assertEquals(JsonException.Kind.LIMIT,
+                assertThrows(JsonException.class, () -> object.put("nested", Map.of())).kind());
+        assertEquals(JsonException.Kind.LIMIT,
+                assertThrows(JsonException.class, () -> array.add(List.of())).kind());
+        assertEquals(JsonException.Kind.LIMIT,
+                assertThrows(JsonException.class, () -> array.set(0, Map.of())).kind());
+        assertEquals(Map.of("keep", 1), object.toJavaValue());
+        assertEquals(List.of(1), array.deepCopy().toJavaValue());
+        JsonObject borrowed = shallow.wrap(Map.of("nested", Map.of()));
+        assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, borrowed::deepCopy).kind());
+        JsonMapper twoLevels = mapper(JsonOptions.DEFAULT.withMaxDepth(2));
+        Map<String, Object> child = new LinkedHashMap<>(Map.of("n", 1));
+        JsonObject tree = twoLevels.createObject(Map.of("left", child, "right", child));
+        tree.getObject("left").put("n", 2);
+        assertEquals(1, tree.getObject("right").get("n").asInt());
+        assertEquals(1, child.get("n"));
+        assertEquals(2, tree.deepCopy().getObject("left").get("n").asInt());
+    }
+
+    @Test
     void borrowedViewsObserveSourceChangesAndRejectNestedWrites() {
         JsonMapper json = mapper(JsonOptions.DEFAULT);
         Map<String, Object> row = new LinkedHashMap<>(Map.of("n", "1"));

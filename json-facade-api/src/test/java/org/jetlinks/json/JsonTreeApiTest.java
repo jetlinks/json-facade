@@ -9,6 +9,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -22,6 +23,23 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JsonTreeApiTest {
+    @Test
+    void staticStructuralCopiesUseTheDefaultDepthBudget() {
+        Map<String, Object> cyclic = new LinkedHashMap<>();
+        cyclic.put("self", cyclic);
+        assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, () -> JsonValue.of(cyclic)).kind());
+        Map<String, ?> deep = Map.of();
+        for (int i = 0; i < 10000; i++) {
+            deep = Map.of("child", deep);
+        }
+        Map<String, ?> source = deep;
+        assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, () -> JsonValue.of(source)).kind());
+        JsonObject object = JsonValue.object().put("keep", 1);
+        assertEquals(JsonException.Kind.LIMIT,
+                assertThrows(JsonException.class, () -> object.put("cycle", cyclic)).kind());
+        assertEquals(Map.of("keep", 1), object.toJavaValue());
+    }
+
     @Test
     void pointerRangesComposeWithExistingLocationsAndKeepCopiesIndependent() {
         JsonObject root = JsonValue.object().put("items", List.of(Map.of("0", Map.of("a/b", 7))));

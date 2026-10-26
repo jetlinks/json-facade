@@ -37,6 +37,7 @@ public interface JsonValue {
      * 递归复制 JSON 兼容的 Java 容器；传入已有 {@code JsonValue} 时直接返回原节点。
      * 数字仅接受精确的 JDK 包装数字、BigInteger 和 BigDecimal 类型。
      * 可变或自定义 Number、POJO 请使用 {@link JsonMapper#toTree(Object)}；容器须无环。
+     * 复制使用 {@link JsonOptions#DEFAULT} 的 maxDepth；超深或循环容器在上限处以 LIMIT 失败。
      */
     static JsonValue of(Object value) {
         return JsonValues.of(value);
@@ -70,6 +71,7 @@ public interface JsonValue {
      * 导出普通 Java 标量或独立 Map/List，适合交给仅接受 JDK 容器的代码。
      * {@code Object data = mapper.readTree("{\"id\":1}").toJavaValue();}
      * 嵌套容器会复制，修改导出容器不修改树；显式 null 返回 Java null，缺失值导出失败。
+     * 复制使用所属映射器的 maxDepth，无映射器时使用默认预算。
      */
     Object toJavaValue();
 

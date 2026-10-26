@@ -1,6 +1,7 @@
 package org.jetlinks.json.jackson3;
 
 import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -9,6 +10,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonIdentityInfo;
+import com.fasterxml.jackson.annotation.ObjectIdGenerators;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import tools.jackson.core.JsonGenerator;
 import tools.jackson.core.StreamReadFeature;
@@ -24,13 +27,20 @@ import org.jetlinks.json.JsonArray;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonMapperBuilder;
+import org.jetlinks.json.JsonOperationOptions;
+import org.jetlinks.json.JsonReader;
+import org.jetlinks.json.JsonToken;
 import org.jetlinks.json.JsonOptions;
 import org.jetlinks.json.JsonObject;
 import org.jetlinks.json.JsonValue;
 import org.jetlinks.json.spi.JsonModule;
+import org.jetlinks.json.spi.JsonAdapter;
+import org.jetlinks.json.spi.JsonModuleContext;
 import org.jetlinks.json.tck.JsonMapperContract;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -244,6 +254,116 @@ class Jackson3ContractTest extends JsonMapperContract {
     }
 
     public record Name(String displayName) {
+    }
+
+    @Test
+    void nativeObjectIdentityIsConfiguredWithoutAFacadeReferenceProtocol() {
+        JsonMapper json = referenceMapper();
+        ReferenceNode a = new ReferenceNode();
+        ReferenceNode b = new ReferenceNode();
+        a.id = "a";
+        b.id = "b";
+        a.next = b;
+        b.next = a;
+        ReferenceNode copy = json.read(json.write(a), ReferenceNode.class);
+        assertSame(copy, copy.next.next);
+        var type = org.jetlinks.json.JsonType.listOf(org.jetlinks.json.JsonType.of(ReferenceNode.class));
+        var values = json.read(json.write(List.of(a, a)), type);
+        assertSame(values.get(0), values.get(1));
+    }
+
+    @Test
+    void standaloneCursorAndIteratorUseIndependentNativeIdentityContexts() {
+        JsonMapper json = referenceMapper();
+        String record = "{\"id\":\"a\",\"next\":\"a\"}";
+        for (JsonMapper variant : List.of(json,
+                json.withOptions(JsonOperationOptions.builder().pretty(true).build()))) {
+            byte[] input = ("[" + record + "," + record + "]").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            try (var items = variant.iterateArray(new ByteArrayInputStream(input), ReferenceNode.class)) {
+                ReferenceNode first = items.next();
+                ReferenceNode second = items.next();
+                assertNotSame(first, second);
+                assertSame(first, first.next);
+                assertSame(second, second.next);
+                assertFalse(items.hasNext());
+            }
+            byte[] crossing = ("[" + record + ",\"a\"]").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            try (JsonReader cursor = variant.reader(new ByteArrayInputStream(crossing))) {
+                assertEquals(JsonToken.START_ARRAY, cursor.next());
+                assertEquals(JsonToken.START_OBJECT, cursor.next());
+                ReferenceNode first = cursor.readValue(ReferenceNode.class);
+                assertSame(first, first.next);
+                assertEquals(JsonToken.STRING, cursor.next());
+                assertEquals(JsonException.Kind.BINDING,
+                        assertThrows(JsonException.class, () -> cursor.readValue(ReferenceNode.class)).kind());
+            }
+        }
+    }
+
+    private static JsonMapper referenceMapper() {
+        return Json.builder().provider("jackson3")
+                .configureNative(tools.jackson.databind.json.JsonMapper.Builder.class,
+                        builder -> builder.addMixIn(ReferenceNode.class, ReferenceMixin.class))
+                .build();
+    }
+
+    @Test
+    void nativeObjectIdsRemainVisibleInsideNestedAdapters() {
+        JsonModule wrappers = new JsonModule() {
+            @Override
+            public String id() {
+                return "reference-wrappers";
+            }
+
+            @Override
+            public void configure(JsonModuleContext context) {
+                context.add(ReferenceWrapper.class, new JsonAdapter<>() {
+                    @Override
+                    public ReferenceWrapper read(JsonReader reader) {
+                        return new ReferenceWrapper(reader.readValue(ReferenceNode.class));
+                    }
+
+                    @Override
+                    public void write(ReferenceWrapper value, org.jetlinks.json.JsonWriter writer) {
+                        writer.value(value.node());
+                    }
+                });
+            }
+        };
+        JsonMapper json = Json.builder().provider("jackson3").module(wrappers)
+                .configureNative(tools.jackson.databind.json.JsonMapper.Builder.class,
+                        builder -> builder.addMixIn(ReferenceNode.class, ReferenceMixin.class))
+                .build();
+        ReferenceNode node = new ReferenceNode();
+        node.id = "a";
+        node.next = node;
+        ReferenceEnvelope envelope = new ReferenceEnvelope();
+        envelope.first = node;
+        envelope.second = new ReferenceWrapper(node);
+        byte[] input = json.writeBytes(List.of(envelope));
+        try (var items = json.iterateArray(new ByteArrayInputStream(input), ReferenceEnvelope.class)) {
+            ReferenceEnvelope copy = items.next();
+            assertSame(copy.first, copy.second.node());
+            assertSame(copy.first, copy.first.next);
+            assertTrue(!items.hasNext());
+        }
+    }
+
+    public record ReferenceWrapper(ReferenceNode node) {
+    }
+
+    public static class ReferenceEnvelope {
+        public ReferenceNode first;
+        public ReferenceWrapper second;
+    }
+
+    public static class ReferenceNode {
+        public String id;
+        public ReferenceNode next;
+    }
+
+    @JsonIdentityInfo(generator = ObjectIdGenerators.PropertyGenerator.class, property = "id")
+    abstract static class ReferenceMixin {
     }
 
     public record NativeValue(String value) {

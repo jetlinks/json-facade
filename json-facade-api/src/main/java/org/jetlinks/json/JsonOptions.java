@@ -18,7 +18,7 @@ package org.jetlinks.json;
  * @param failDuplicateKeys 解析时拒绝重复字段名
  * @param omitNulls 通过 Provider 的原生包含策略省略 null
  * @param pretty 同步写入时格式化输出；响应式写入始终紧凑
- * @param maxDepth 正整数，原生解析及写入的嵌套深度上限
+ * @param maxDepth 正整数，原生解析、写入及结构树复制的容器嵌套深度上限
  * @param maxStringLength 正整数，原生字符串令牌长度上限，计量由 Provider 决定
  * @param maxNumberLength 正整数，原生数字令牌文本长度上限
  * @param maxValueBytes 正整数，流式单值或事件的字节预算；不限制同步整值读写
