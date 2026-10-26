@@ -617,6 +617,26 @@ public abstract class JsonMapperContract extends JsonOperationContract {
     }
 
     @Test
+    void compactWriterLeavesFlushBoundariesWithItsCaller() {
+        TrackedOutput output = new TrackedOutput();
+        try (JsonWriter writer = mapper(JsonOptions.DEFAULT.withPretty(true)).compactWriter(output)) {
+            writer.beginArray();
+            writer.value(Map.of("n", 1));
+            assertEquals(0, output.flushes);
+            writer.flush();
+            assertEquals(1, output.flushes);
+            assertEquals("[{\"n\":1}", output.toString(StandardCharsets.UTF_8));
+            writer.value(2);
+            assertEquals(1, output.flushes);
+            writer.endArray();
+            writer.flush();
+            assertEquals(2, output.flushes);
+            assertEquals("[{\"n\":1},2]", output.toString(StandardCharsets.UTF_8));
+        }
+        assertFalse(output.closed);
+    }
+
+    @Test
     void neutralAdaptersWorkNestedAndRejectDuplicateRegistration() {
         JsonModule module = new LabelsModule();
         JsonMapper json = mapper(JsonOptions.DEFAULT, module);
@@ -1074,6 +1094,12 @@ public abstract class JsonMapperContract extends JsonOperationContract {
 
     private static final class TrackedOutput extends ByteArrayOutputStream {
         private boolean closed;
+        private int flushes;
+
+        @Override
+        public void flush() {
+            flushes++;
+        }
 
         @Override
         public void close() throws IOException {

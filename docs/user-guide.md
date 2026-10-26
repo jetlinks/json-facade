@@ -438,7 +438,7 @@ static void writeArray(JsonMapper mapper, java.io.OutputStream output, Iterable<
 }
 ```
 
-writer 遵循 pretty，compactWriter/writeCompact 只为本次操作使用 compact。number("1.2300e+10") 校验完整数字语法，不经过 double，也不是 raw 注入。关闭不补残缺括号；多个根值的分隔由调用方负责。
+writer 遵循 pretty，compactWriter/writeCompact 只为本次操作使用 compact。compactWriter 不在每个 value 后自动 flush，由调用方选择刷新边界；原生缓冲满时仍可写出，Reactor 入口仍在每条记录/事件后刷新。number("1.2300e+10") 校验完整数字语法，不经过 double，也不是 raw 注入。关闭不补残缺括号；多个根值的分隔由调用方负责。
 
 循环 POJO 的 ID 编码、解析及冲突规则由 Provider 管理。Jackson 可使用 `@JsonIdentityInfo`，也可通过 `configureNative` 注册 Mixin，门面不定义 `$id/$ref` 协议。普通 JSON、JsonPointer 和 JsonValue 不会自动解析引用字段。
 
@@ -648,7 +648,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 305 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 307 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 

@@ -224,6 +224,7 @@ public interface JsonMapper {
     /**
      * 创建可连续写值的紧凑写入器，不自动添加根值分隔符；分隔和目标流由调用方管理。
      * 每次操作或订阅独立创建；关闭时不补齐未闭合的容器。
+     * 不在每个完整值后自动 flush，由调用方在需要交付字节时刷新；原生缓冲满时仍可写出。
      * 适合大批量数组导出，或已由上层管理分隔符的记录协议：
      * <pre>{@code
      * var output = new java.io.ByteArrayOutputStream();

@@ -44,7 +44,8 @@ final class Jackson2Mapper implements JsonMapper {
         this.operationOptions = operationOptions;
         this.valueReader = valueReader;
         this.valueWriter = valueWriter;
-        compactWriter = valueWriter.without(SerializationFeature.INDENT_OUTPUT)
+        // 流式层在记录/事件边界显式刷新，避免原生 writeValue 与外层重复 flush。
+        compactWriter = valueWriter.without(SerializationFeature.INDENT_OUTPUT, SerializationFeature.FLUSH_AFTER_WRITE_VALUE)
                 .with((PrettyPrinter) null).withRootValueSeparator("");
     }
 

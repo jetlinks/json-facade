@@ -377,7 +377,10 @@ Active native/user callbacks must return before parser close and input release.
 
 Output uses a reusable compact native generator per subscription and fresh
 binding contexts per record, preventing object-ID accumulation. Serial progression
-uses zero prefetch. ARRAY emits `[]` for an empty source; NDJSON/ROOT_VALUES emit
+uses zero prefetch. Jackson compact writers disable native flush-after-value;
+the caller controls flush boundaries, and the reactive adapter still flushes
+each record/event before delivery. Full native buffers may write earlier. ARRAY
+emits `[]` for an empty source; NDJSON/ROOT_VALUES emit
 zero bytes and separate records with LF. SINGLE_VALUE requires exactly one value.
 Event output accepts only SINGLE_VALUE and validates balanced containers,
 field/value ordering and root uniqueness. Errors/cancellation never repair output.
@@ -411,7 +414,7 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 305 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 307 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
 module's 80% branch-coverage gate pass. Aggregate branch coverage is 1348/1437
 (93.81%); fastjson2 covers 74/76 branches (97.37%). Tests cover all three Providers, configured
@@ -439,6 +442,22 @@ supports fused Pointer access, direct receiver delivery and Jackson 3 native
 byte[] delegation. The Class convenience comparison adds about 16–28 B per
 one-record operation and about 16 B per 1000-record operation; no per-record type
 wrapping was observed. Timing results do not establish universal CPU savings.
+
+The Jackson compact-writer flush comparison uses Java 21, a 512 MiB heap,
+GC profiling, two forks, three 500 ms warmups and four 500 ms measurements.
+Each operation publishes the same 1000 short records with the same ownership,
+budgets and record delivery boundaries. Removing native flush-after-value leaves
+one explicit flush per record. Time is mean ± JMH error:
+
+| Provider / format | Before µs | After µs | Before / after B per operation |
+| --- | --- | --- | --- |
+| Jackson 2 / NDJSON | 90.22 ± 18.59 | 97.62 ± 18.42 | 231633 / 231633 |
+| Jackson 2 / ARRAY | 98.08 ± 11.72 | 79.31 ± 8.77 | 231777 / 231777 |
+| Jackson 3 / NDJSON | 81.41 ± 9.26 | 73.37 ± 3.97 | 239729 / 239729 |
+| Jackson 3 / ARRAY | 82.41 ± 13.38 | 72.15 ± 3.91 | 239873 / 239885 |
+
+Allocations remain effectively unchanged and timing intervals overlap; the result
+supports simpler flush ownership without establishing a universal CPU gain.
 
 Fastjson2 JMH uses Java 21, a 512 MiB heap, GC profiling, two forks, three
 300 ms warmups and four 300 ms measurements. Native/facade paths share depth,
