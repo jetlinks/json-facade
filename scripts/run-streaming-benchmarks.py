@@ -32,6 +32,7 @@ def main():
     fixtures.add_argument("--provider-read", action="store_true", help="Compare configured native/facade inputs")
     fixtures.add_argument("--published-write", action="store_true", help="Compare independently owned output")
     fixtures.add_argument("--operation-options", action="store_true", help="Compare preparation and operation reuse")
+    fixtures.add_argument("--fastjson2", action="store_true", help="Compare native and facade synchronous fastjson2 binding")
     args, extra = parser.parse_known_args()
     for artifact, path in DEPS.items():
         if not (M2 / path).is_file():
@@ -42,7 +43,10 @@ def main():
     generated.mkdir(parents=True, exist_ok=True)
     base_cp = runpy.run_path(str(ROOT / "scripts" / "run-netty-stress.py"))["classpath"]() \
         if args.netty else STRESS["classpath"]()
-    if args.operation_options:
+    if args.fastjson2:
+        base_cp = runpy.run_path(str(ROOT / "scripts" / "run-fastjson2-stress.py"))["classpath"]()
+        fixture, package = "Fastjson2Benchmark", "org.jetlinks.json"
+    elif args.operation_options:
         fixture, package = "OperationOptionsBenchmark", "org.jetlinks.json"
     elif args.global_lookup:
         fixture, package = "GlobalLookupBenchmark", "org.jetlinks.json"
@@ -69,7 +73,7 @@ def main():
     ]
     options = [item for flag, value in defaults if flag not in extra for item in (flag, value)]
     multiple = args.tree or args.tree_wrap or args.global_lookup or args.iterator \
-        or args.provider_read or args.published_write or args.operation_options
+        or args.provider_read or args.published_write or args.operation_options or args.fastjson2
     benchmark = "^" + re.escape(f"{package}.{fixture}") + (r"\..*$" if multiple else r"\.run$")
     subprocess.run(["java", "-cp", cp, "org.openjdk.jmh.Main", benchmark]
                    + options + extra, check=True, cwd=ROOT)

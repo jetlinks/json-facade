@@ -6,6 +6,7 @@
 
 - [入口选择与安装](#start)
 - [Provider、全局配置与 Spring](#provider)
+- [fastjson2 支持范围](#fastjson2)
 - [通用配置](#options)
 - [绑定与泛型](#binding)
 - [树、路径与断言](#tree)
@@ -66,7 +67,7 @@ mvn -B -ntp install
 
 Jackson 3 改用 `json-facade-jackson3`；响应式操作加 `json-facade-reactor`；Netty 加 `json-facade-netty`。Spring 配置桥接加 `json-facade-spring`，其 DataBuffer 入口还需显式加 Reactor 模块。
 
-当前依赖基线为 Jackson 2 `2.22.3`、Jackson 3 `3.0.3`、Reactor `3.7.18`、Netty `4.1.138.Final`。覆盖版本后应验证真实引擎兼容性。TCK 与 coverage 模块不属于应用运行依赖。
+当前依赖基线为 Jackson 2 `2.22.3`、Jackson 3 `3.0.3`、fastjson2 `2.0.66`、Reactor `3.7.18`、Netty `4.1.138.Final`。覆盖版本后应验证真实引擎兼容性。TCK 与 coverage 模块不属于应用运行依赖。
 
 以下完整示例可保存为 QuickStart.java：
 
@@ -91,6 +92,47 @@ public class QuickStart {
 ```
 
 下文片段沿用 Item、已构建的 mapper，以及 `JsonStreamMapper streams = JsonStreamMapper.of(mapper)`。按需导入 `org.jetlinks.json`、`org.jetlinks.json.reactor`、JDK 与 Reactor 类型；声明为方法/类型的片段放在类体中。
+
+<a id="fastjson2"></a>
+## fastjson2 支持范围
+
+添加 `org.jetlinks:json-facade-fastjson2`，按以下方式显式采用原生令牌限制：
+
+```java
+import org.jetlinks.json.fastjson2.Fastjson2Builder;
+import org.jetlinks.json.fastjson2.Fastjson2Provider;
+
+JsonMapper mapper = Json.builder().provider("fastjson2")
+    .options(Fastjson2Provider.nativeOptions())
+    .build();
+int first = mapper.readTree("[1]").asArray().get(0).asInt();
+JsonMapper export = mapper.withOptions(JsonOperationOptions.builder()
+    .omitNulls(true).pretty(true).build());
+```
+
+| 能力 | fastjson2 门面支持范围 |
+| --- | --- |
+| 同步 String/byte[]/InputStream/Reader 绑定、泛型 | 支持，完整单值驻留内存，拒绝空输入和尾随内容 |
+| 输出 String/byte[]/OutputStream/Writer | 支持，原生先缓冲完整单值；调用方 I/O 保持打开 |
+| JsonValue、结构工厂、wrap、Pointer、转换 | 支持；convert 复用原生 JSON UTF-8 单值缓冲 |
+| 单次数字精度、null、pretty 配置 | 支持；准备后复用，compact 输出也在准备阶段完成配置 |
+| 原生 ObjectReader/ObjectWriter、Mixin、引用检测 | 通过 Fastjson2Builder 配置，转换沿用相同 JSON 处理器 |
+| 有限字符串/数字长度预算 | 拒绝；nativeOptions 将两项设为 Integer.MAX_VALUE，采用原生限制 |
+| 严格重复键、严格未知字段 | 拒绝；原生开关未统一覆盖全部 DTO/record 路径 |
+| JsonModule、业务属性 | 拒绝，使用原生扩展配置 |
+| JsonReader/JsonWriter、数组迭代器、增量/事件会话、Reactor 流式入口 | 访问 I/O 前以 CONFIGURATION 拒绝 |
+
+原生能力通过 `configureNative(Fastjson2Builder.class, builder -> ...)` 配置。例如
+`builder.writer().config(com.alibaba.fastjson2.JSONWriter.Feature.ReferenceDetection)`
+启用原生引用检测。操作原生回调接收 `com.alibaba.fastjson2.JSONReader.Context`
+或 `JSONWriter.Context`，须返回相同 Provider 的上下文，不能冲突于通用配置。
+准备变体会创建独立原生 Provider，并可能重放构建/操作回调；回调须无外部副作用，
+不得保留可变配置。每次业务读写不会重建配置，也不会修改共享上下文。
+
+fastjson2 自带的 JSONStreamReader 可阻塞式逐行读取，但公开入口使用默认上下文，
+无法直接承接这里的配置和非阻塞会话生命周期，因此没有包装成门面的 NDJSON 支持。
+需要现有完整流式能力时选择 Jackson Provider。原生语法、引用协议和类型转换保持原生行为；
+原生通用异常归为 BINDING，I/O 原因归为 IO，不解析错误消息来拼装原生路径或分类。
 
 <a id="provider"></a>
 ## Provider 与实例管理
@@ -606,12 +648,13 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 293 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含操作配置隔离、结构复制深度/环限制、原生对象 ID 作用域、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在两套 Provider 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 305 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 
 ```sh
 python3 scripts/run-tree-access-stress.py
+python3 scripts/run-fastjson2-stress.py
 python3 scripts/run-streaming-stress.py --mib 16 --heaps 128 --chunks 64 65536
 python3 scripts/run-streaming-stress.py
 python3 scripts/run-resource-release-stress.py
@@ -625,6 +668,7 @@ python3 scripts/run-streaming-benchmarks.py --iterator
 python3 scripts/run-streaming-benchmarks.py --provider-read
 python3 scripts/run-streaming-benchmarks.py --published-write
 python3 scripts/run-streaming-benchmarks.py --operation-options
+python3 scripts/run-streaming-benchmarks.py --fastjson2
 python3 scripts/run-streaming-benchmarks.py --netty
 ```
 

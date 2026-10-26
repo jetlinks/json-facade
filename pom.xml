@@ -12,6 +12,7 @@
         <module>json-facade-tck</module>
         <module>json-facade-jackson2</module>
         <module>json-facade-jackson3</module>
+        <module>json-facade-fastjson2</module>
         <module>json-facade-reactor</module>
         <module>json-facade-netty</module>
         <module>json-facade-spring</module>
@@ -22,6 +23,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jackson2.version>2.22.3</jackson2.version>
         <jackson3.version>3.0.3</jackson3.version>
+        <fastjson2.version>2.0.66</fastjson2.version>
         <reactor.version>3.7.18</reactor.version>
         <netty.version>4.1.138.Final</netty.version>
         <reactor-netty.version>1.2.18</reactor-netty.version>
@@ -32,6 +34,11 @@
     </properties>
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>com.alibaba.fastjson2</groupId>
+                <artifactId>fastjson2</artifactId>
+                <version>${fastjson2.version}</version>
+            </dependency>
             <dependency>
                 <groupId>io.netty</groupId>
                 <artifactId>netty-bom</artifactId>

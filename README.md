@@ -1,6 +1,6 @@
 # json-facade
 
-A small facade for **manual JSON operations**. Application code depends on neutral JSON types and a two-method Provider SPI, rather than a particular Jackson version. HTTP codecs and framework JSON configuration stay with their official integrations.
+A small facade for **manual JSON operations**. Application code depends on neutral JSON types and a two-method Provider SPI. HTTP codecs and framework JSON configuration stay with their official integrations.
 
 Requires Java 17+. Current development version: `1.0.0-SNAPSHOT` (not yet published to Maven Central).
 
@@ -13,6 +13,7 @@ Documentation: [完整中文使用手册](docs/user-guide.md) · [Public contrac
 | `json-facade-api` | Binding, generic types, trees, token cursors and incremental SPI | JDK only |
 | `json-facade-jackson2` | Jackson 2 Provider | API, Jackson 2 |
 | `json-facade-jackson3` | Jackson 3 Provider | API, Jackson 3 |
+| `json-facade-fastjson2` | Synchronous fastjson2 binding with explicit native limits | API, fastjson2 |
 | `json-facade-reactor` | Reactive byte[] / ByteBuffer operations | API, reactor-core |
 | `json-facade-netty` | Optional retained ByteBuf input and allocated segmented output | Reactor adapter, Netty buffer/common |
 | `json-facade-spring` | Spring 6 / Boot 3 default-mapper bridge and explicit DataBuffer streams | Jackson 2 Provider, Spring Context; Boot/Reactor optional |
@@ -38,7 +39,15 @@ var values = mapper.read("[{\"count\":3}]",
 
 Built mappers are immutable and safe to share. Construct configuration before publishing the instance. Each reader, writer and incremental session has its own state. Supplied InputStream/Reader/OutputStream/Writer remain caller-owned.
 
-Synchronous root-array input can use `mapper.iterateArray(input, Item.class)`
+fastjson2 supports synchronous binding, native extensions, neutral trees and operation
+flags using `Json.builder().provider("fastjson2").options(Fastjson2Provider.nativeOptions()).build()`
+(`org.jetlinks.json.fastjson2.Fastjson2Provider`). It requires explicit native token
+limits and rejects unsupported strict flags, neutral modules/attributes and facade
+cursors/incremental operations before I/O. Its native line-stream API is a blocking
+API with a separate default context; it is not used as a nonblocking facade session.
+See the [Provider support table](docs/user-guide.md#fastjson2).
+
+With Jackson 2/3, synchronous root-array input can use `mapper.iterateArray(input, Item.class)`
 (or a `JsonType`) in try-with-resources. Its `CloseableIterator` binds one element
 at a time, validates trailing input on exhaustion and releases parser state on
 close or parsing failure. The caller retains input ownership. Native token/depth
@@ -156,7 +165,7 @@ For Jackson 3, use `tools.jackson.databind.json.JsonMapper.Builder.class`. Each 
 
 Opt-in [large-document stress and allocation benchmarks](docs/contracts.md#implementation-and-validation) exercise both engines under bounded heaps.
 
-The engine SPI has only `JsonProvider.id()` and `create(JsonConfiguration)`. No Provider-specific reactive SPI or capability registry is required. [The contracts](docs/contracts.md) specify framing, ownership and extension behavior.
+The engine SPI has only `JsonProvider.id()` and `create(JsonConfiguration)`. Each Provider documents its supported operations; unsupported operations fail before I/O. No Provider-specific reactive SPI or capability registry is required. [The contracts](docs/contracts.md) specify framing, ownership and extension behavior.
 
 ## Build and quality gates
 
@@ -164,6 +173,6 @@ The engine SPI has only `JsonProvider.id()` and `create(JsonConfiguration)`. No 
 mvn -B -ntp verify
 ```
 
-Requires Python 3 for the aggregate coverage gate. The build runs the shared TCK against both actual engines, Reactor demand/cancellation tests, compilation with all warnings treated as errors, Checkstyle, SpotBugs at maximum effort/low threshold, and JaCoCo. **Every production module must have at least 80% branch coverage**, including execution from cross-module tests. No production classes/branches are excluded. JUnit/TCK utilities are not production code in the aggregate report.
+Requires Python 3 for the aggregate coverage gate. The build runs the shared TCK against both Jackson engines, fastjson2 binding/rejection tests, Reactor demand/cancellation tests, compilation with all warnings treated as errors, Checkstyle, SpotBugs at maximum effort/low threshold, and JaCoCo. **Every production module must have at least 80% branch coverage**, including execution from cross-module tests. No production classes/branches are excluded. JUnit/TCK utilities are not production code in the aggregate report.
 
 Coverage HTML: `json-facade-coverage/target/site/jacoco-aggregate/index.html`. CI runs the same gates on Java 17 and 21 and retains reports. These checks are concrete quality requirements; they do not claim a third-party “A+” certification.

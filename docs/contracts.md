@@ -3,6 +3,58 @@
 For installation and examples, see the [Chinese user guide](user-guide.md).
 This document describes the current implementation and its verification boundaries.
 
+## Fastjson2 support
+
+`json-facade-fastjson2` supplies Provider ID `fastjson2`, using fastjson2 2.0.66
+and the API only. It supports synchronous binding/generics, neutral trees,
+native extensions and prepared numeric/null/pretty flags. Native
+`ObjectReaderProvider`/`ObjectWriterProvider` instances are private to each
+prepared mapper; no global registration, tokenizer copy, hidden Jackson
+dependency or capability registry is introduced.
+
+Construction requires explicit `Fastjson2Provider.nativeOptions()`, which sets
+string/number limits to `Integer.MAX_VALUE`; native limits and available memory
+then apply. Finite token limits, strict duplicate keys and strict unknown fields
+are rejected at preparation, including native callback conflicts. In native
+2.0.66 probes, duplicate-key checks did not reject duplicate DTO fields and the
+unknown-field flag did not reject an extra record property. The facade does not
+replace those paths with Map prebinding, graph scans or slower binding algorithms.
+Native depth limits and neutral-tree structural-copy limits remain configured.
+
+`Fastjson2Builder` exposes native reader/writer contexts for build-time
+extensions. Operation transformations accept `JSONReader.Context` and
+`JSONWriter.Context`; they cannot replace the configured native Providers or
+conflict with common policy. Fresh native Providers isolate prepared variants,
+tree ownership and caches. Build callbacks and accumulated operation transforms
+may replay during preparation, including preparation of a compact writer for a
+pretty mapper; they must have no external side effects. Reads/writes do not
+reconfigure shared contexts. Reuse prepared mappers to amortize cache warmup.
+
+Conversion reuses configured native JSON UTF-8 encoding/decoding, with a
+whole-value byte buffer and no intermediate String or neutral tree. It preserves
+the JSON representation of dates, binary values and custom native handlers. Object
+references follow native `ReferenceDetection`/`$ref` behavior and operation-local
+native resolve tasks. The facade adds no reference representation or ID table.
+
+Fastjson2's `JSONReader.of(InputStream, ...)` consumes the complete input before
+binding, and encoding buffers one complete value before writing it. Its
+`JSONStreamReader` and delimiter-consumer APIs support blocking record streams,
+but the inspected public APIs use a separate default context and do not expose
+the facade's prepared Providers or arbitrary-chunk nonblocking parsing. Therefore
+facade cursors, array iterators, structural writers and incremental/event sessions
+fail with `CONFIGURATION` before I/O; no stream is collected behind those APIs.
+Neutral `JsonModule` and operation attributes are rejected because a native reader
+context attachment is unavailable. Applications may explicitly use native line
+APIs outside the facade, with their own configuration and lifecycle.
+
+Whole-root checks require a value and native EOF, rejecting additional roots.
+Caller I/O remains open. Native grammar/coercion remain fastjson2 behavior,
+including single quotes and native-accepted trailing commas; permissive syntax
+is not revalidated by a second parser. Generic native
+`JSONException` failures have no structured category/path, so they map to
+`BINDING` without parsing error messages; native I/O causes map to `IO`. Facade
+root checks use `SYNTAX`, and neutral structural-copy limits use `LIMIT`.
+
 ## Responsibility and configuration
 
 The facade serves manual JSON operations. HTTP codecs, ORM configuration, network
@@ -19,8 +71,10 @@ separate modules.
 
 `JsonProvider` exposes only `id()` and `create(JsonConfiguration)`. Discovery
 requires one unambiguous match; duplicate IDs, missing candidates and ambiguity
-fail before use. Parse failures never cause engine fallback. A Provider must
-support the public incremental contracts; collecting a stream is not a substitute.
+fail before use. Parse failures never cause engine fallback. Each Provider
+documents its supported operations; unsupported configuration fails at preparation
+and unsupported operations fail with CONFIGURATION before I/O. A supported
+incremental operation may not collect the complete stream as a substitute.
 
 Built mappers are immutable and shareable. Builders, mutable trees, cursors and
 sessions are operation-local. The library creates no background threads, global
@@ -357,9 +411,10 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 293 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 305 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
-module's 80% branch-coverage gate pass. Tests cover both real Providers, configured
+module's 80% branch-coverage gate pass. Aggregate branch coverage is 1348/1437
+(93.81%); fastjson2 covers 74/76 branches (97.37%). Tests cover all three Providers, configured
 extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
 ownership. The [CI matrix](../.github/workflows/verify.yml) also runs small-chunk,
 closed-owner, tree-retention and pooled-buffer regressions.
@@ -368,6 +423,10 @@ children, native object-ID mixins, per-record ID isolation and nested Adapter
 context reuse. Four independent Java 17/21 and Provider runs each consume one
 million distinct IDs with record-local self-cycles under a 32 MiB heap. This
 does not promise cross-record references or add a facade reference protocol.
+Fastjson2 independently completes one million synchronous round trips per JDK
+under a 32 MiB heap, alternating prepared variants and checking native self-cycle
+identity, conversion and borrowed inputs. Its classpath contains only API and
+fastjson2 modules plus the native engine; this is not a streaming-memory claim.
 
 Large-document evidence covers at least 1 GiB aggregate documents under a 128 MiB
 heap, with bounded records/tokens; pooled transport runs also constrain direct
@@ -380,6 +439,33 @@ supports fused Pointer access, direct receiver delivery and Jackson 3 native
 byte[] delegation. The Class convenience comparison adds about 16–28 B per
 one-record operation and about 16 B per 1000-record operation; no per-record type
 wrapping was observed. Timing results do not establish universal CPU savings.
+
+Fastjson2 JMH uses Java 21, a 512 MiB heap, GC profiling, two forks, three
+300 ms warmups and four 300 ms measurements. Native/facade paths share depth,
+number/null configuration, complete-root checks and independently owned byte[]
+results, operating on one/1000 three-field Map records. Conversion uses the same
+UTF-8 representation in both paths. Initial results are mean ± JMH error:
+
+| Operation | Records | Native µs | Facade µs | Native / facade B per operation |
+| --- | --- | --- | --- | --- |
+| Read byte[] | 1 | 0.078 ± 0.002 | 0.080 ± 0.004 | 544 / 544 |
+| Write byte[] | 1 | 0.054 ± 0.003 | 0.054 ± 0.002 | 152 / 176 |
+| Convert | 1 | 0.143 ± 0.003 | 0.162 ± 0.012 | 696 / 744 |
+| Read byte[] | 1000 | 75.77 ± 4.04 | 77.77 ± 10.66 | 372306 / 372306 |
+| Write byte[] | 1000 | 42.20 ± 1.98 | 43.09 ± 5.50 | 66945 / 66945 |
+| Convert | 1000 | 119.95 ± 10.77 | 117.30 ± 5.40 | 439251 / 439299 |
+
+A targeted 1000-record read/write repeat uses two forks and five 1 s warmups
+and measurements. Read times are 77.60 ± 3.91 / 121.11 ± 82.34 µs
+(native/facade), and write times are 43.35 ± 1.05 / 49.59 ± 8.41 µs.
+The noisy facade read sample prevents a reliable CPU-overhead conclusion.
+Write allocation in that repeat is 66944 / 66968 B; JIT optimization affects
+whether the small operation wrapper survives. These fixtures show fixed small
+allocation differences rather than an added allocation per record; they do not
+prove negligible CPU overhead for arbitrary bindings, streams or trees.
+Preparing an omit-null variant costs about 3.9–4.0 µs and 16.3–17.0 kB,
+excluding first-use serializer warmup. Reuse prepared mappers and account for
+whole-value buffering on synchronous streams and conversion.
 
 Operation-options JMH uses Java 21, a 512 MiB heap, GC profiling, two forks,
 three 300 ms warmups and four 300 ms measurements. It compares the same one/1000
@@ -450,6 +536,7 @@ After `mvn -B -ntp verify`, run optional checks from the repository root:
 
 ```sh
 python3 scripts/run-tree-access-stress.py
+python3 scripts/run-fastjson2-stress.py
 python3 scripts/run-streaming-stress.py
 python3 scripts/run-resource-release-stress.py
 python3 scripts/run-netty-stress.py
@@ -464,6 +551,7 @@ python3 scripts/run-streaming-benchmarks.py --iterator
 python3 scripts/run-streaming-benchmarks.py --provider-read
 python3 scripts/run-streaming-benchmarks.py --published-write
 python3 scripts/run-streaming-benchmarks.py --operation-options
+python3 scripts/run-streaming-benchmarks.py --fastjson2
 python3 scripts/run-streaming-benchmarks.py --netty
 ```
 

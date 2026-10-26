@@ -18,6 +18,8 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: maven
       - run: mvn -B -ntp verify
+      - name: Fastjson2 synchronous identity and ownership under bounded heap
+        run: python3 scripts/run-fastjson2-stress.py > target/fastjson2.jsonl
       - name: Tree view and validation-error ancestor-retention regression
         run: python3 scripts/run-tree-access-stress.py > target/tree-access.jsonl
       - name: Bounded-heap streaming smoke matrix
@@ -43,6 +45,7 @@ jobs:
             **/target/spotbugsXml.xml
             **/target/checkstyle-result.xml
             target/streaming-smoke.jsonl
+            target/fastjson2.jsonl
             target/tree-access.jsonl
             target/resource-release.jsonl
             target/netty-streaming.jsonl

@@ -20,9 +20,10 @@ import java.nio.charset.StandardCharsets;
  * 大数组逐条消费用 {@link #iterateArray(InputStream, Class)}；
  * 分块输入或定位嵌套数组用 {@link #readSession(JsonType, JsonReadOptions)}。
  * <p>整值 read/convert 会物化完整结果；返回 String/byte[] 的 write 会收集完整输出。
- * 单条超大值仍需足够内存；输出到流可避免收集完整输出字节。
+ * 单条超大值仍需足够内存；Provider 可能缓冲整个单值输出，超大文档应使用支持结构写出的 Provider。
  * 通过 Provider 完成解析和编码，不自动接管 HTTP 编解码器。
  * 映射器可共享，游标、迭代器和增量会话每次操作独立创建并关闭。
+ * Provider 支持范围见对应模块说明；不支持的操作在访问 I/O 前以 CONFIGURATION 失败。
  *
  * @since 1.0.0
  * @see org.jetlinks.json.spi.JsonProvider

@@ -21,4 +21,16 @@
         <Method name="structuralCopiesBoundCyclesAndDeepAcyclicInputs"/>
         <Bug pattern="IL_CONTAINER_ADDED_TO_ITSELF"/>
     </Match>
+    <!-- The build-only native callback borrows mutable contexts intentionally;
+         published facade mappers never expose those contexts. -->
+    <Match>
+        <Class name="org.jetlinks.json.fastjson2.Fastjson2Builder"/>
+        <Method name="reader" params="" returns="com.alibaba.fastjson2.JSONReader$Context"/>
+        <Bug pattern="EI_EXPOSE_REP"/>
+    </Match>
+    <Match>
+        <Class name="org.jetlinks.json.fastjson2.Fastjson2Builder"/>
+        <Method name="writer" params="" returns="com.alibaba.fastjson2.JSONWriter$Context"/>
+        <Bug pattern="EI_EXPOSE_REP"/>
+    </Match>
 </FindBugsFilter>
