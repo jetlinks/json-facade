@@ -423,7 +423,12 @@ next 返回一个完整元素，也可能是 Java null。耗尽后 next 抛 NoSu
 不套用增量 session 的 maxValueBytes；单个元素仍须有界。
 
 手动 token 处理继续用 mapper.reader(input)：readValue/skipValue 消费当前完整值，下次 next
-返回后继，next 返回 null 才是 EOF，text 读取字段名或标量文本。写出可组合结构与绑定：
+返回后继，next 返回 null 才是 EOF，text 读取字段名或标量文本。
+
+Jackson 游标只复用最近目标类型的原生 reader；重复读取泛型元素时复用同一个 JsonType，
+可避免反复解析泛型。切换类型会重新准备 reader，每个完整值的绑定上下文仍独立。
+
+写出可组合结构与绑定：
 
 ```java
 static void writeArray(JsonMapper mapper, java.io.OutputStream output, Iterable<Item> items) {
@@ -648,7 +653,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 307 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 309 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 
@@ -665,8 +670,11 @@ python3 scripts/run-databuffer-stress.py --release-only
 python3 scripts/run-streaming-benchmarks.py
 python3 scripts/run-streaming-benchmarks.py --tree
 python3 scripts/run-streaming-benchmarks.py --iterator
+python3 scripts/run-streaming-benchmarks.py --iterator -p payload=map,dto,nested -p records=65536 -p textSize=1000
+python3 scripts/run-streaming-benchmarks.py --events -p textSize=20,1000
 python3 scripts/run-streaming-benchmarks.py --provider-read
 python3 scripts/run-streaming-benchmarks.py --published-write
+python3 scripts/run-streaming-benchmarks.py --published-write -p textSize=1048576 -p recordCount=8 -p textKind=ascii,unicode,escaped
 python3 scripts/run-streaming-benchmarks.py --operation-options
 python3 scripts/run-streaming-benchmarks.py --fastjson2
 python3 scripts/run-streaming-benchmarks.py --netty

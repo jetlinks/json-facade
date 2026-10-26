@@ -127,11 +127,13 @@ public abstract class JsonOperationContract extends JsonTreeContract {
             assertEquals(JsonToken.START_ARRAY, reader.next());
             reader.next();
             assertEquals(new Wrapped(new Adjusted(2)), reader.readValue(Wrapped.class));
+            assertEquals(10, reader.attribute(OFFSET));
             assertNull(reader.current());
             assertEquals(JsonToken.NULL, reader.next());
-            assertNull(reader.readValue(Wrapped.class));
+            assertNull(reader.readValue(Adjusted.class));
             reader.next();
             assertEquals(new Wrapped(new Adjusted(3)), reader.readValue(Wrapped.class));
+            assertEquals(10, reader.attribute(OFFSET));
             assertEquals(JsonToken.END_ARRAY, reader.next());
         }
         try (var iterator = operation.iterateArray(input("[12,13]"), Wrapped.class)) {

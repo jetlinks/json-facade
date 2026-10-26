@@ -28,7 +28,8 @@ def main():
     fixtures.add_argument("--tree", action="store_true", help="Compare chained and fused tree access")
     fixtures.add_argument("--tree-wrap", action="store_true", help="Compare borrowed and copied Map/List trees")
     fixtures.add_argument("--global-lookup", action="store_true", help="Compare published global and direct references")
-    fixtures.add_argument("--iterator", action="store_true", help="Compare root-array iterator and cursor traversal")
+    fixtures.add_argument("--iterator", action="store_true", help="Compare configured native/cursor/iterator binding")
+    fixtures.add_argument("--events", action="store_true", help="Separate native, Session and Reactor event costs")
     fixtures.add_argument("--provider-read", action="store_true", help="Compare configured native/facade inputs")
     fixtures.add_argument("--published-write", action="store_true", help="Compare independently owned output")
     fixtures.add_argument("--operation-options", action="store_true", help="Compare preparation and operation reuse")
@@ -58,6 +59,8 @@ def main():
         fixture, package = "PublishedWriteBenchmark", "org.jetlinks.json.reactor"
     elif args.iterator:
         fixture, package = "ArrayIteratorBenchmark", "org.jetlinks.json"
+    elif args.events:
+        fixture, package = "EventPipelineBenchmark", "org.jetlinks.json.reactor"
     elif args.tree:
         fixture, package = "TreeAccessBenchmark", "org.jetlinks.json"
     elif args.netty:
@@ -73,7 +76,7 @@ def main():
     ]
     options = [item for flag, value in defaults if flag not in extra for item in (flag, value)]
     multiple = args.tree or args.tree_wrap or args.global_lookup or args.iterator \
-        or args.provider_read or args.published_write or args.operation_options or args.fastjson2
+        or args.provider_read or args.published_write or args.operation_options or args.fastjson2 or args.events
     benchmark = "^" + re.escape(f"{package}.{fixture}") + (r"\..*$" if multiple else r"\.run$")
     subprocess.run(["java", "-cp", cp, "org.openjdk.jmh.Main", benchmark]
                    + options + extra, check=True, cwd=ROOT)

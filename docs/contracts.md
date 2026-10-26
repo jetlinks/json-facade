@@ -156,6 +156,10 @@ including when cleanup fails.
 Each standalone cursor `readValue` creates a native per-value binding context;
 object IDs can refer within that value but not to earlier/later calls. Borrowed
 readers inside Adapters retain the enclosing native context and its object IDs.
+Jackson cursors retain only the most recent JDK Type and immutable typed reader,
+skipping repeated generic resolution when that same Type is reused. Changing the
+type delegates to the native reader again. Closing detaches both references;
+binding contexts and object IDs are never cached across values.
 
 ## Synchronous array iteration
 
@@ -414,17 +418,17 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 307 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 309 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
-module's 80% branch-coverage gate pass. Aggregate branch coverage is 1348/1437
-(93.81%); fastjson2 covers 74/76 branches (97.37%). Tests cover all three Providers, configured
+module's 80% branch-coverage gate pass. Aggregate branch coverage is 1352/1441
+(93.82%); fastjson2 covers 74/76 branches (97.37%). Tests cover all three Providers, configured
 extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
 ownership. The [CI matrix](../.github/workflows/verify.yml) also runs small-chunk,
 closed-owner, tree-retention and pooled-buffer regressions.
 Reference regressions cover configurable structural-copy limits, shared acyclic
 children, native object-ID mixins, per-record ID isolation and nested Adapter
-context reuse. Four independent Java 17/21 and Provider runs each consume one
-million distinct IDs with record-local self-cycles under a 32 MiB heap. This
+context reuse. Four independent Java 17/21 and Provider runs each consume over
+1 GiB and one million distinct IDs with record-local self-cycles under a 32 MiB heap. This
 does not promise cross-record references or add a facade reference protocol.
 Fastjson2 independently completes one million synchronous round trips per JDK
 under a 32 MiB heap, alternating prepared variants and checking native self-cycle
@@ -525,31 +529,90 @@ keeps chain/Pointer allocation at 224/88 B/op without observed timing regression
 These results support constant-cost root wrapping, not allocation-free access
 or conversion; Provider binding, export and explicit deep copies have their own costs.
 
-The root-array iterator comparison uses identical binding, count/sum checks and
-array/EOF validation against the existing cursor. Java 21, 512 MiB heap, GC
-profiling, two forks, three 300 ms warmups and four 300 ms measurements give
-these results for 1000 Integer elements (time is mean ± JMH error). The Jackson 3
-iterator is a directed repeat using five one-second warmups/measurements because
-the shorter run showed high timing variance:
+The synchronous array benchmark uses the same mapper configuration, input,
+binding type, count/checksum and array/EOF checks for native, cursor and iterator
+paths. Java 21, a 512 MiB heap, GC profiling, two forks, five 500 ms warmups
+and five 500 ms measurements cover 65536 records with 1000-character text.
+Map and DTO documents are 64.6875 MiB; nested generic rows add one list per element.
+Time is mean ± JMH 99.9% error; allocation includes native binding:
 
-| Provider | Cursor µs/op | Iterator µs/op | Cursor B/op | Iterator B/op |
+| Provider / element | Before iterator ms/op | Current iterator ms/op | Before / current B/record |
+| --- | --- | --- | --- |
+| jackson2 / map | 24.62 ± 0.78 | 22.78 ± 1.17 | 1528.02 / 1376.02 |
+| jackson2 / dto | 23.41 ± 1.00 | 23.44 ± 1.35 | 1200.02 / 1200.02 |
+| jackson2 / nested | 32.83 ± 5.84 | 29.62 ± 9.11 | 1760.02 / 1456.03 |
+| jackson3 / map | 30.43 ± 8.66 | 23.30 ± 1.43 | 1544.02 / 1392.03 |
+| jackson3 / dto | 26.82 ± 1.68 | 26.20 ± 1.27 | 1424.02 / 1440.02 |
+| jackson3 / nested | 28.54 ± 0.98 | 24.14 ± 0.99 | 1776.02 / 1472.03 |
+
+Skipping repeated generic Type resolution removes about 152 B/Map record and
+304 B/nested-list record on both Providers. Those two current paths match the
+configured native loop's per-record allocation in this workload; that does not
+establish zero overhead for other types or call shapes. DTO allocation shows
+JIT-dependent variation without a stable improvement. Timing intervals overlap
+for several comparisons, so the allocation result is not a universal CPU claim.
+
+An isolated same-type preparation benchmark allocates 152 B for Map and 304 B
+for nested generic resolution on both native engines, despite TypeFactory cache
+hits; class-only resolution is effectively allocation-free. Retaining only the
+current typed reader without the JDK Type marker did not reduce these costs.
+Each cursor retains one Type/reader pair, not a map or shared context; native
+binding contexts and object IDs remain per value.
+
+The event benchmark separates configured native async parsing, direct Session
+receiver delivery, Reactor delivery, synchronous cursor output and complete event
+transcoding. Source construction is outside measurement. Write references
+publish owned arrays at the same per-event flush boundaries; the cursor lacks
+Reactor's demand/cancellation/budget machinery and remains a lower-bound reference.
+Java 21, 512 MiB heap, two forks, three 500 ms warmups and four 500 ms
+measurements cover 1000 records (8002 events). Total allocation is:
+
+| Provider / text chars | Native parse B/op | Session B/op | Reactor read B/op | Cursor write B/op | Reactor write B/op |
+| --- | --- | --- | --- | --- | --- |
+| jackson2 / 20 | 113153 | 234362 | 235471 | 216443 | 1002064 |
+| jackson2 / 1000 | 1095877 | 1223437 | 1230320 | 1200461 | 1986092 |
+| jackson3 / 20 | 113249 | 234442 | 235568 | 216539 | 1002167 |
+| jackson3 / 1000 | 1095978 | 1223523 | 1230413 | 1200561 | 1986205 |
+
+Session event materialization adds about 120 kB/op over the native parser here;
+five text-bearing tokens per record produce immutable event objects. Reactor
+reading adds about 1.1–6.9 kB/op over Session delivery as input chunk count rises.
+Reactor writing adds about 786 kB/op over cursor output, or about 98 B/event,
+including inner subscriptions and output ownership. These differences include
+required contracts, not wholly removable waste. Current implementation retains
+zero prefetch, per-event delivery and cancellation-safe ownership; no custom
+Publisher, pooled public events or weakened validation is introduced.
+For 20-character records, native/Session/Reactor reads take 86/149/193 µs on
+Jackson 2 and 83/140/195 µs on Jackson 3. Cursor/Reactor writes take 185/438 µs
+and 187/411 µs respectively. The short-event path has material CPU overhead;
+longer-text timing also varies by fork, so matching allocation does not establish
+negligible CPU cost.
+
+Large-string references support textKind=ascii/unicode/escaped and an explicit
+recordCount, comparing native ObjectWriter, native generator and facade output
+with identical owned-result consumption. Different text encodings and sinks can
+change native/JIT behavior; compare each workload's forks rather than interpreting
+one fastest result as a universal facade overhead estimate.
+Jackson 3 repeats use eight values, 1048576 UTF-16 code units of text per value
+(Unicode is rounded down to complete the repeating unit), two forks, four 500 ms
+warmups and four 500 ms measurements:
+
+| JDK / text | Native writer ms/op | Native generator ms/op | Facade ms/op | Facade allocation increase over writer |
 | --- | --- | --- | --- | --- |
-| Jackson 2 | 28.69 ± 2.89 | 31.97 ± 7.42 | 16897 | 48889 |
-| Jackson 3 | 26.55 ± 2.23 | 32.74 ± 7.59 | 16993 | 44996 |
+| 17 / ASCII | 3.66 ± 0.38 | 3.65 ± 0.18 | 3.90 ± 0.52 | 0.35% |
+| 17 / Unicode | 7.37 ± 0.37 | 8.08 ± 2.48 | 8.08 ± 0.52 | 1.11% |
+| 17 / escaped | 4.10 ± 0.45 | 4.03 ± 0.15 | 4.53 ± 0.33 | 0.65% |
+| 21 / ASCII | 5.99 ± 0.82 | 6.64 ± 2.55 | 6.26 ± 1.07 | 0.35% |
+| 21 / Unicode | 7.98 ± 1.05 | 8.24 ± 1.34 | 8.20 ± 0.47 | 1.10% |
+| 21 / escaped | 7.08 ± 1.02 | 7.35 ± 0.30 | 8.55 ± 1.45 | 0.65% |
 
-These are total operation allocations, including native binding. Jackson 2 now
-prepares the cursor's configured reader once, reducing allocation relative to the
-previous per-element setup. In this run the iterator costs about 32 B more per
-element than the cursor; native reader derivation and JIT escape analysis depend
-on the call shape. Jackson 3's long-run iterator forks allocate about 17008 and
-72984 B/op, respectively, so the average is not a fixed allocation guarantee.
-The former per-value TypeReference wrapper is removed; configured native readers
-create independent value contexts. Cursor allocation falls from about 64865 to
-16993 B/op on this fixture. A single-element operation adds roughly 80–108 B of
-fixed reader/context setup; no extra type cache is introduced to tune these samples.
-This compares convenience iteration with cursor use,
-not the full facade with a native parser; it does not establish negligible CPU
-overhead for all payloads or Providers.
+Java 21 ASCII neighbors at 524288/2097152 code units take native writer
+5.86 ± 1.40 / 11.33 ± 0.62 ms and facade 5.91 ± 0.67 / 11.77 ± 0.66 ms.
+These repeats do not stably reproduce the earlier multi-fold timing split.
+Native paths also vary with JDK/workload, and the precise compilation/runtime
+cause remains unresolved. No size threshold, JVM tuning or replacement encoder
+is introduced. UTF-16 text length is not output byte length; Unicode and escaped
+values produce larger documents and must be compared within the same workload.
 
 After `mvn -B -ntp verify`, run optional checks from the repository root:
 
@@ -567,8 +630,11 @@ python3 scripts/run-streaming-benchmarks.py --tree
 python3 scripts/run-streaming-benchmarks.py --tree-wrap
 python3 scripts/run-streaming-benchmarks.py --global-lookup
 python3 scripts/run-streaming-benchmarks.py --iterator
+python3 scripts/run-streaming-benchmarks.py --iterator -p payload=map,dto,nested -p records=65536 -p textSize=1000
+python3 scripts/run-streaming-benchmarks.py --events -p textSize=20,1000
 python3 scripts/run-streaming-benchmarks.py --provider-read
 python3 scripts/run-streaming-benchmarks.py --published-write
+python3 scripts/run-streaming-benchmarks.py --published-write -p textSize=1048576 -p recordCount=8 -p textKind=ascii,unicode,escaped
 python3 scripts/run-streaming-benchmarks.py --operation-options
 python3 scripts/run-streaming-benchmarks.py --fastjson2
 python3 scripts/run-streaming-benchmarks.py --netty

@@ -23,7 +23,7 @@ import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
 import reactor.core.publisher.Flux;
 
-/** Owned-output comparison. Native reference omits demand, cancellation and facade budgets. */
+/** 比较独立持有的输出；原生参考不包含需求、取消和门面预算管理。 */
 @State(Scope.Thread)
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
@@ -33,6 +33,10 @@ public class PublishedWriteBenchmark {
     public String engine;
     @Param({"20", "4096"})
     public int textSize;
+    @Param({"ascii"})
+    public String textKind;
+    @Param({"0"})
+    public int recordCount;
     private JsonStreamMapper streams;
     private com.fasterxml.jackson.databind.ObjectWriter writer2;
     private tools.jackson.databind.ObjectWriter writer3;
@@ -51,18 +55,27 @@ public class PublishedWriteBenchmark {
             facade = Json.builder().provider(engine).configureNative(
                     com.fasterxml.jackson.databind.json.JsonMapper.Builder.class,
                     builder -> writer2 = builder.build().writer()
-                            .without(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT)
+                            .without(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT,
+                                    com.fasterxml.jackson.databind.SerializationFeature.FLUSH_AFTER_WRITE_VALUE)
                             .withRootValueSeparator("")).build();
         } else {
             facade = Json.builder().provider(engine).configureNative(
                     tools.jackson.databind.json.JsonMapper.Builder.class,
                     builder -> writer3 = builder.build().writer()
-                            .without(tools.jackson.databind.SerializationFeature.INDENT_OUTPUT)
+                            .without(tools.jackson.databind.SerializationFeature.INDENT_OUTPUT,
+                                    tools.jackson.databind.SerializationFeature.FLUSH_AFTER_WRITE_VALUE)
                             .withRootValueSeparator("")).build();
         }
         streams = JsonStreamMapper.of(facade);
-        value = Map.of("n", 1, "s", "x".repeat(textSize));
-        records = textSize == 20 ? 1000 : 256;
+        String unit = switch (textKind) {
+            case "ascii" -> "x";
+            case "unicode" -> "中😀";
+            case "escaped" -> "\"\n\\";
+            default -> throw new IllegalArgumentException(textKind);
+        };
+        String text = unit.repeat(Math.max(1, textSize / unit.length()));
+        value = Map.of("n", 1, "s", text);
+        records = recordCount > 0 ? recordCount : textSize == 20 ? 1000 : 256;
         byte[] expected = facade.writeBytes(Collections.nCopies(records, value));
         expectedLength = expected.length;
         retained = new ArrayList<>();
@@ -71,15 +84,20 @@ public class PublishedWriteBenchmark {
         }
         List<byte[]> nativeChunks = retained;
         retained = new ArrayList<>();
+        nativeGeneratorOwned();
+        List<byte[]> generatorChunks = retained;
+        retained = new ArrayList<>();
         facadeOwned();
         List<byte[]> facadeChunks = retained;
         retained = null;
         Map<String, Object> original = value;
-        value = Map.of("n", 1, "s", "y".repeat(textSize));
+        // 改变内容但保留 UTF-8 与转义后的长度，便于复用同一输出计数校验。
+        value = Map.of("n", 2, "s", text.replace('x', 'y').replace('中', '文').replace('\n', '\t'));
         nativeOwnedLowerBound();
         facadeOwned();
         value = original;
-        if (!Arrays.equals(expected, join(nativeChunks)) || !Arrays.equals(expected, join(facadeChunks))) {
+        if (!Arrays.equals(expected, join(nativeChunks)) || !Arrays.equals(expected, join(generatorChunks))
+                || !Arrays.equals(expected, join(facadeChunks))) {
             throw new AssertionError("Published bytes changed or differ from expected document");
         }
     }
@@ -110,6 +128,49 @@ public class PublishedWriteBenchmark {
                 generator.flush();
             }
         }
+        return output.count;
+    }
+
+    /** 直接调用原生 generator，区分绑定上下文成本；保持输出所有权和刷新边界一致。 */
+    @Benchmark
+    public long nativeGeneratorOwned() throws Exception {
+        output.count = 0;
+        if (writer2 != null) {
+            try (var generator = writer2.createGenerator(output)) {
+                generator.writeStartArray();
+                generator.flush();
+                for (int i = 0; i < records; i++) {
+                    generator.writeStartObject();
+                    for (var entry : value.entrySet()) {
+                        generator.writeFieldName(entry.getKey());
+                        if (entry.getValue() instanceof String text) generator.writeString(text);
+                        else generator.writeNumber(((Number) entry.getValue()).intValue());
+                    }
+                    generator.writeEndObject();
+                    generator.flush();
+                }
+                generator.writeEndArray();
+                generator.flush();
+            }
+        } else {
+            try (var generator = writer3.createGenerator(output)) {
+                generator.writeStartArray();
+                generator.flush();
+                for (int i = 0; i < records; i++) {
+                    generator.writeStartObject();
+                    for (var entry : value.entrySet()) {
+                        generator.writeName(entry.getKey());
+                        if (entry.getValue() instanceof String text) generator.writeString(text);
+                        else generator.writeNumber(((Number) entry.getValue()).intValue());
+                    }
+                    generator.writeEndObject();
+                    generator.flush();
+                }
+                generator.writeEndArray();
+                generator.flush();
+            }
+        }
+        if (output.count != expectedLength) throw new AssertionError("Native generator byte count");
         return output.count;
     }
 

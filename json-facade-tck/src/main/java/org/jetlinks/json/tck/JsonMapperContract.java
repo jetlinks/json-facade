@@ -594,6 +594,33 @@ public abstract class JsonMapperContract extends JsonOperationContract {
     }
 
     @Test
+    void cursorReusesBindingConfigurationAcrossRepeatedAndAlternatingTypes() {
+        JsonMapper json = mapper(JsonOptions.DEFAULT, new LabelsModule());
+        TrackedInput input = new TrackedInput(("[\"label:a\",\"label:b\",[{\"n\":1.2500}],"
+                + "null,{\"value\":5},\"label:c\",[{\"n\":2.5000}]]").getBytes(StandardCharsets.UTF_8));
+        try (JsonReader reader = json.reader(input)) {
+            assertEquals(JsonToken.START_ARRAY, reader.next());
+            assertEquals(JsonToken.STRING, reader.next());
+            assertEquals(new Label("a"), reader.readValue(Label.class));
+            assertEquals(JsonToken.STRING, reader.next());
+            assertEquals(new Label("b"), reader.readValue(Label.class));
+            assertEquals(JsonToken.START_ARRAY, reader.next());
+            assertEquals(List.of(Map.of("n", new BigDecimal("1.2500"))), reader.readValue(DECIMAL_ROWS));
+            assertEquals(JsonToken.NULL, reader.next());
+            assertNull(reader.readValue(DECIMAL_ROWS));
+            assertEquals(JsonToken.START_OBJECT, reader.next());
+            assertEquals(5, reader.readValue(Item.class).value);
+            assertEquals(JsonToken.STRING, reader.next());
+            assertEquals(new Label("c"), reader.readValue(Label.class));
+            assertEquals(JsonToken.START_ARRAY, reader.next());
+            assertEquals(List.of(Map.of("n", new BigDecimal("2.5000"))), reader.readValue(DECIMAL_ROWS));
+            assertEquals(JsonToken.END_ARRAY, reader.next());
+            assertNull(reader.next());
+        }
+        assertFalse(input.closed);
+    }
+
+    @Test
     void tokenWriterPreservesExplicitNullAndDoesNotRepairBrokenDocuments() {
         TrackedOutput output = new TrackedOutput();
         try (JsonWriter writer = mapper().writer(output)) {

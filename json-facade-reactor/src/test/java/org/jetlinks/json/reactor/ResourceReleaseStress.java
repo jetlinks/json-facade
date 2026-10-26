@@ -72,6 +72,8 @@ public final class ResourceReleaseStress {
             reader.next();
             if (invalid) {
                 fails(reader::next, JsonException.Kind.SYNTAX);
+            } else {
+                require(Integer.valueOf(1).equals(reader.readValue(Integer.class)), "Typed cursor binding");
             }
         }
         reader.close();

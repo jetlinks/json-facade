@@ -1,5 +1,6 @@
 package org.jetlinks.json.jackson3;
 
+import java.lang.reflect.Type;
 import tools.jackson.core.JsonParser;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ObjectReader;
@@ -13,6 +14,7 @@ import org.jetlinks.json.JsonType;
 final class Jackson3Reader implements JsonReader {
     private JsonParser parser;
     private ObjectReader valueReader;
+    private Type valueType;
     private DeserializationContext context;
 
     Jackson3Reader(JsonParser parser, ObjectReader reader) {
@@ -52,8 +54,13 @@ final class Jackson3Reader implements JsonReader {
         try {
             JsonParser input = parser();
             if (valueReader != null) {
-                // 独立游标每值使用原生 reader 的新上下文，避免对象 ID 跨记录保留；嵌套 Adapter 沿用当前上下文。
-                return valueReader.forType(valueReader.typeFactory().constructType(type.type())).readValue(input);
+                // 只保留当前类型，跳过重复的泛型解析；每值仍有新上下文，避免跨记录保留对象 ID。
+                Type target = type.type();
+                if (target != valueType) {
+                    valueReader = valueReader.forType(valueReader.typeFactory().constructType(target));
+                    valueType = target;
+                }
+                return valueReader.readValue(input);
             }
             T value = context.readValue(input, context.constructType(type.type()));
             // 原生上下文不保证清除末令牌，统一履行中立游标的消费契约。
@@ -75,6 +82,7 @@ final class Jackson3Reader implements JsonReader {
         JsonParser owned = parser;
         parser = null;
         valueReader = null;
+        valueType = null;
         context = null;
         if (owned != null) {
             Jackson3Support.call(() -> {

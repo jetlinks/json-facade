@@ -1,5 +1,6 @@
 package org.jetlinks.json.jackson2;
 
+import java.lang.reflect.Type;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.DeserializationContext;
@@ -13,6 +14,7 @@ import org.jetlinks.json.JsonType;
 final class Jackson2Reader implements JsonReader {
     private JsonParser parser;
     private ObjectReader valueReader;
+    private Type valueType;
     private DeserializationContext context;
 
     Jackson2Reader(JsonParser parser, ObjectReader reader) {
@@ -57,7 +59,13 @@ final class Jackson2Reader implements JsonReader {
                 input.clearCurrentToken();
                 return value;
             }
-            return valueReader.forType(type.type()).readValue(input);
+            // 只保留当前类型，避免重复构造泛型绑定键；每个值仍有独立的原生绑定上下文。
+            Type target = type.type();
+            if (target != valueType) {
+                valueReader = valueReader.forType(target);
+                valueType = target;
+            }
+            return valueReader.readValue(input);
         } catch (Exception failure) {
             throw Jackson2Support.failure(failure);
         }
@@ -74,6 +82,7 @@ final class Jackson2Reader implements JsonReader {
         JsonParser owned = parser;
         parser = null;
         valueReader = null;
+        valueType = null;
         context = null;
         if (owned != null) {
             Jackson2Support.call(() -> {
