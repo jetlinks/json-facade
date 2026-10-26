@@ -1,8 +1,17 @@
 package org.jetlinks.json;
 
 /**
- * 可共享的不可变绑定策略与解析预算；默认保留 null 和无类型数字精度。
- * {@code withX} 返回仅更改一项的新配置，仍执行构造校验；调用方自行限制流的总大小。
+ * 构建映射器时使用的默认读写设置，适合统一 DTO 校验、null 输出和解析大小限制。
+ * <pre>{@code
+ * JsonOptions options = JsonOptions.DEFAULT
+ *     .withFailUnknownProperties(true)
+ *     .withOmitNulls(true)
+ *     .withMaxValueBytes(1024 * 1024); // 增量读取/流式写出时，每条记录最多 1 MiB
+ * JsonMapper mapper = Json.builder().provider("jackson2").options(options).build();
+ * }</pre>
+ * 默认保留 null，无类型小数使用高精度表示。
+ * 配置不可变，withX 返回仅更改一项的副本；只对一组调用覆盖开关请用 {@link JsonOperationOptions}。
+ * 字节预算不限制同步整值 read/write/convert，也不是整个流的总大小限制。
  *
  * @param losslessNumbers 无类型浮点数使用高精度表示，避免先转为 double
  * @param failUnknownProperties 绑定对象时拒绝未知属性

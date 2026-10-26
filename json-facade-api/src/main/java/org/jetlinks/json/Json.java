@@ -3,7 +3,13 @@ package org.jetlinks.json;
 import java.util.function.Supplier;
 
 /**
- * JSON 映射器的构建入口和应用级共享实例注册表。
+ * 创建映射器或取得应用级共享映射器的入口，适合在应用启动时配置并注入业务组件。
+ * <pre>{@code
+ * JsonMapper mapper = Json.builder().provider("jackson2").build();
+ * String json = mapper.write(java.util.Map.of("id", "dev-1"));
+ * }</pre>
+ * 若使用全局入口，应在首次使用前完成 {@link #registerGlobal(JsonMapper)}，
+ * 后续通过 {@link #global()} 获取；通常一个应用只注册一次。
  * <p>全局仅接受已配置、可并发使用的实例，注册后不可替换、移除或重置，也不自动关闭。
  * 引用与本类的 ClassLoader 同寿命；短生命周期组件应自行持有或注入实例。
  *

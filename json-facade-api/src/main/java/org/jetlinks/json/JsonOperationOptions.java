@@ -8,8 +8,18 @@ import java.util.Objects;
 import java.util.function.UnaryOperator;
 
 /**
- * 不可变的操作覆盖，未指定项继承映射器；通过 {@link JsonMapper#withOptions} 准备后复用。
- * 通用绑定开关、业务属性及原生读写器定制相互独立，不管理分帧、Pointer 或解析预算。
+ * 在共享映射器上为一组调用覆盖选项，适合“本次导出保留 null”或“本次导入拒绝未知字段”。
+ * <pre>{@code
+ * JsonMapper strict = mapper.withOptions(JsonOperationOptions.builder()
+ *     .failUnknownProperties(true)
+ *     .omitNulls(false)
+ *     .build());
+ * record Device(String id) {}
+ * Device device = strict.read("{\"id\":\"dev-1\"}", Device.class);
+ * }</pre>
+ * 未设置项继承映射器，显式 false 表示关闭；构建后不可变，请复用 {@link JsonMapper#withOptions} 的结果。
+ * 常用开关直接设置；业务自定义行为通过 attribute 传参，原生 Feature 通过 nativeReader/nativeWriter 设置。
+ * 分帧和嵌套数组定位使用 {@link JsonReadOptions}，解析预算仍由 {@link JsonOptions} 管理。
  * <p>原生回调仅在准备时执行；派生新的操作映射器时可重放，须无外部副作用。
  * 回调不得保留或修改共享原生对象，须返回不可变读写器的配置结果。
  *
@@ -167,51 +177,81 @@ public final class JsonOperationOptions {
         private Builder() {
         }
 
-        /** 设置无类型浮点数是否保留精度。 */
+        /** 设置读取为 Object/Map/List 时的小数精度；true 使用 BigDecimal，显式 Double 等目标仍由目标类型决定。 */
         public Builder losslessNumbers(boolean value) {
             losslessNumbers = value;
             return this;
         }
 
-        /** 设置绑定对象时是否拒绝未知属性。 */
+        /** 严格导入 DTO 时设为 true；例如 DTO 只有 id，输入多出 extra 字段时读取失败。 */
         public Builder failUnknownProperties(boolean value) {
             failUnknownProperties = value;
             return this;
         }
 
-        /** 设置解析时是否拒绝重复字段。 */
+        /** 校验配置或消息时设为 true，使 {@code {"id":1,"id":2}} 在解析阶段失败。 */
         public Builder failDuplicateKeys(boolean value) {
             failDuplicateKeys = value;
             return this;
         }
 
-        /** 设置是否按原生全局包含策略省略 null；仍尊重更具体注解。 */
+        /**
+         * 设置对象字段和 Map 值为 null 时是否省略，例如 true 可将 {@code {"remark":null}} 输出为 {@code {}}。
+         * false 保留 null；仍尊重更具体注解或自定义序列化器，不删除数组中的 null 位置。
+         */
         public Builder omitNulls(boolean value) {
             omitNulls = value;
             return this;
         }
 
-        /** 设置同步输出是否格式化；流式输出始终紧凑。 */
+        /** 调试或导出可读配置时设为 true，增加缩进和换行；流式输出始终紧凑。 */
         public Builder pretty(boolean value) {
             pretty = value;
             return this;
         }
 
-        /** 设置非空业务属性；同键后值覆盖前值，值须可安全共享。 */
+        /**
+         * 给自定义 Adapter 传业务参数，例如脱敏模式、是否包含调试字段。
+         * 在 Adapter 内通过 {@link JsonReader#attribute} / {@link JsonWriter#attribute} 读取；
+         * 仅设置属性不会自动启用脱敏等行为，用法见 {@link JsonAttribute}。
+         * 同键后值覆盖前值；键和值非空，值须可安全共享。
+         */
         public <T> Builder attribute(JsonAttribute<T> key, T value) {
             attributes.put(Objects.requireNonNull(key, "key"),
                     Objects.requireNonNull(key.cast(value), "value"));
             return this;
         }
 
-        /** 追加原生读取定制，如 ObjectReader.with(feature)，必须返回派生结果。 */
+        /**
+         * 使用所选 Provider 的原生读取功能，例如 Jackson 2 允许将单值绑定成 List：
+         * <pre>{@code
+         * JsonMapper flexible = mapper.withOptions(JsonOperationOptions.builder()
+         *     .nativeReader(com.fasterxml.jackson.databind.ObjectReader.class,
+         *         reader -> reader.with(com.fasterxml.jackson.databind.DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY))
+         *     .build());
+         * java.util.List<Integer> values = flexible.read("1", JsonType.listOf(JsonType.of(Integer.class))); // [1]
+         * }</pre>
+         * Jackson 3 使用 tools.jackson 对应类型。回调只在准备时执行，必须返回派生结果，
+         * 不能替换流工厂、固定读取目标或破坏输入所有权和完整根值校验。
+         */
         public <T> Builder nativeReader(Class<T> type, UnaryOperator<T> action) {
             readers.add(new NativeOption<>(Objects.requireNonNull(type, "type"),
                     Objects.requireNonNull(action, "action")));
             return this;
         }
 
-        /** 追加原生写入定制，如 ObjectWriter.with(feature)，必须返回派生结果。 */
+        /**
+         * 使用所选 Provider 的原生写出功能，例如 Jackson 2 按键排序 Map：
+         * <pre>{@code
+         * JsonMapper sorted = mapper.withOptions(JsonOperationOptions.builder()
+         *     .nativeWriter(com.fasterxml.jackson.databind.ObjectWriter.class,
+         *         writer -> writer.with(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS))
+         *     .build());
+         * String json = sorted.write(java.util.Map.of("b", 2, "a", 1)); // {"a":1,"b":2}
+         * }</pre>
+         * Jackson 3 使用 tools.jackson 对应类型。回调须返回 with/without 的结果，不能返回 null；
+         * 与显式通用选项冲突时，在 {@link JsonMapper#withOptions} 调用阶段失败。
+         */
         public <T> Builder nativeWriter(Class<T> type, UnaryOperator<T> action) {
             writers.add(new NativeOption<>(Objects.requireNonNull(type, "type"),
                     Objects.requireNonNull(action, "action")));

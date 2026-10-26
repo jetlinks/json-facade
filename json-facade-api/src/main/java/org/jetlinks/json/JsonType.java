@@ -7,8 +7,17 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 仅依赖 JDK 的不可变类型令牌，可并发共享，不保存 Provider 的原生类型对象。
- * 嵌套泛型用直接匿名子类捕获，例如 {@code new JsonType<List<String>>() {}}，也可组合工厂方法。
+ * 描述带泛型的读取目标，避免读取 List/Map 时丢失元素类型。
+ * 普通 DTO 可直接传 Class；嵌套集合用匿名子类或组合工厂：
+ * <pre>{@code
+ * JsonType<List<Integer>> integers = JsonType.listOf(JsonType.of(Integer.class));
+ * List<Integer> values = mapper.read("[1,2]", integers);
+ * JsonType<Map<String, List<Integer>>> grouped = new JsonType<>() {};
+ * Map<String, List<Integer>> result = mapper.read("{\"values\":[1,2]}", grouped);
+ * }</pre>
+ * 类型对象不可变、可复用，只保存 JDK Type，不保存引擎类型或映射器。
+ * 不要在泛型方法里用 {@code new JsonType<List<T>>() {}} 捕获运行时元素类型；
+ * 此时 T 仍是类型变量，应传入具体 JsonType 后使用 listOf 组合。
  *
  * @param <T> 目标 Java 类型
  * @since 1.0.0
@@ -32,7 +41,8 @@ public class JsonType<T> {
     }
 
     /**
-     * 包装具体类，不解析该类声明中的泛型参数。
+     * 将 Class 作为组合类型的基础，例如 {@code JsonType.listOf(JsonType.of(Integer.class))}。
+     * 不解析类声明中的泛型参数；{@code JsonType.of(List.class)} 不包含元素类型。
      */
     public static <T> JsonType<T> of(Class<T> type) {
         return new JsonType<>(type);
@@ -46,14 +56,23 @@ public class JsonType<T> {
     }
 
     /**
-     * 组合 List 元素类型，可继续嵌套泛型。
+     * 指定 List 元素类型，适合读取一批 DTO 或嵌套数组。
+     * <pre>{@code
+     * var type = JsonType.listOf(JsonType.listOf(JsonType.of(Integer.class)));
+     * List<List<Integer>> rows = mapper.read("[[1,2],[3]]", type);
+     * }</pre>
      */
     public static <T> JsonType<List<T>> listOf(JsonType<T> element) {
         return new JsonType<>(new GenericType(List.class, element.type()));
     }
 
     /**
-     * 组合 Map 键值类型；JSON 对象键的具体绑定规则由 Provider 决定。
+     * 指定 Map 键值类型，适合读取以标识分组的数据。
+     * <pre>{@code
+     * var type = JsonType.mapOf(JsonType.of(String.class), JsonType.listOf(JsonType.of(Integer.class)));
+     * Map<String, List<Integer>> groups = mapper.read("{\"group-a\":[1,2]}", type);
+     * }</pre>
+     * JSON 对象键的具体绑定规则由 Provider 决定；通常使用 String 键。
      */
     public static <K, V> JsonType<Map<K, V>> mapOf(JsonType<K> key, JsonType<V> value) {
         return new JsonType<>(new GenericType(Map.class, key.type(), value.type()));

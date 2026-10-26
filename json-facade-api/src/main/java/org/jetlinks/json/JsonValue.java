@@ -4,7 +4,16 @@ import org.jetlinks.json.internal.JsonArrayIndex;
 import org.jetlinks.json.internal.JsonValues;
 
 /**
- * 与引擎无关的 JSON 值视图，区分显式 {@code NULL} 与路径缺失 {@code MISSING}。
+ * 统一访问 JSON 对象、数组和标量，适合字段结构不固定的配置或接口结果。
+ * <pre>{@code
+ * JsonValue value = mapper.readTree("{\"items\":[{\"id\":1}],\"remark\":null}");
+ * int id = value.get("items").get(0).get("id").asInt(); // 1
+ * boolean explicitNull = value.get("remark").isNull(); // true：存在且值为 null
+ * boolean missing = value.get("unknown").isMissing();  // true：字段不存在
+ * value.asObject().put("online", true);
+ * String json = mapper.write(value);
+ * }</pre>
+ * 区分显式 {@code NULL} 与路径缺失 {@code MISSING}；找不到字段仍可继续 get，错误位置保留在节点上。
  * <p>结构工厂创建可变容器，借用和缺失视图拒绝写入；所有视图均不提供并发同步。
  * {@code toJavaValue()} 和 {@code deepCopy()} 隔离嵌套容器；POJO 绑定须使用所属映射器。
  *
@@ -58,7 +67,9 @@ public interface JsonValue {
     boolean isMissing();
 
     /**
-     * 导出 Java 标量或独立的 Map/List 图；显式 null 返回 Java null，缺失值导出失败。
+     * 导出普通 Java 标量或独立 Map/List，适合交给仅接受 JDK 容器的代码。
+     * {@code Object data = mapper.readTree("{\"id\":1}").toJavaValue();}
+     * 嵌套容器会复制，修改导出容器不修改树；显式 null 返回 Java null，缺失值导出失败。
      */
     Object toJavaValue();
 
@@ -86,6 +97,12 @@ public interface JsonValue {
      * 使用所属映射器的 Provider 转换；缺失或 null 返回 Java null，真实值的转换异常向外传播。
      * 无绑定配置的结构节点须显式使用 {@link JsonMapper#convert(Object, JsonType)}。
      * 自定义存储实现须覆写此绑定入口。
+     * 例如从动态文档取出局部对象，再交给业务 DTO：
+     * <pre>{@code
+     * record Device(String id) {}
+     * JsonValue root = mapper.readTree("{\"device\":{\"id\":\"dev-1\"}}");
+     * Device device = root.get("device").as(Device.class);
+     * }</pre>
      */
     default <T> T as(JsonType<T> type) {
         return JsonValues.convert(this, type);

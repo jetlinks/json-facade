@@ -3,8 +3,25 @@ package org.jetlinks.json;
 import java.util.Objects;
 
 /**
- * 操作上下文的类型化属性键；按对象身份区分，请复用同一个键实例。
- * 属性仅传递数据，行为由自定义 Adapter 或原生处理器实现；值须稳定且线程安全。
+ * 为自定义 Adapter 传递业务参数的键，例如是否输出调试字段、采用哪种脱敏模式。
+ * 配置和读取必须使用同一个键实例；通常将键声明为 static final，不能用同名新键代替。
+ * <pre>{@code
+ * JsonAttribute<Boolean> includeDebug = JsonAttribute.of("include-debug", Boolean.class);
+ * JsonMapper operation = mapper.withOptions(JsonOperationOptions.builder()
+ *     .attribute(includeDebug, true).build());
+ * var output = new java.io.ByteArrayOutputStream();
+ * try (JsonWriter writer = operation.writer(output)) {
+ *     writer.beginObject();
+ *     if (Boolean.TRUE.equals(writer.attribute(includeDebug))) {
+ *         writer.name("debug");
+ *         writer.string("enabled");
+ *     }
+ *     writer.endObject();
+ * }
+ * // 自定义 Adapter 中也可以读取该属性；只有消费属性的代码才决定输出行为。
+ * }</pre>
+ * 属性也传给原生绑定上下文；框架只传参，不自动添加字段或实施脱敏。
+ * 属性值不深复制，须稳定且线程安全。
  *
  * @param <T> 属性值类型
  * @since 1.0.0

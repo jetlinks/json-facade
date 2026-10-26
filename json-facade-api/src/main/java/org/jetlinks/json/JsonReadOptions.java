@@ -3,8 +3,16 @@ package org.jetlinks.json;
 import java.util.Objects;
 
 /**
- * 单次增量读取的分帧、定位、null 策略和单条记录预算。
- * Pointer 定位仅用于单文档，按令牌增量跳过无关内容；每个被绑定的结果仍须完整物化。
+ * 指定分块输入应如何拆成记录，适用于 {@link JsonMapper#readSession} 和响应式读取。
+ * <pre>{@code
+ * // [1,2]：逐条读取根数组元素。
+ * JsonReadOptions array = JsonReadOptions.of(JsonReadOptions.Mode.ARRAY_ELEMENTS);
+ * // {"data":{"items":[1,2]}}：只绑定 data.items 的直接元素。
+ * JsonReadOptions nested = JsonReadOptions.selectElements(JsonPointer.of("/data/items"));
+ * // 逐行导入日志：每个非空行一个完整 JSON 值。
+ * JsonReadOptions lines = JsonReadOptions.of(JsonReadOptions.Mode.NDJSON);
+ * }</pre>
+ * 配置不可变，可复用。Pointer 定位仅用于单文档，逐令牌跳过无关内容；每个结果仍须完整物化。
  * 实际字节预算取本选项与映射器预算的较小值。
  *
  * @param mode 根值的分帧方式
@@ -87,7 +95,10 @@ public record JsonReadOptions(Mode mode, Selection selection, NullPolicy nullPol
     }
 
     /**
-     * 从单文档定位一个完整值，使用默认 null 策略和字节预算。
+     * 读取包装文档中的一个完整值，例如
+     * {@code JsonReadOptions.selectValue(JsonPointer.of("/data/summary"))}。
+     * 如果选中的是数组，会一次绑定整个数组；要逐元素读取请用 {@link #selectElements}。
+     * 使用默认 null 策略和字节预算。
      */
     public static JsonReadOptions selectValue(JsonPointer pointer) {
         return new JsonReadOptions(Mode.SINGLE_VALUE, new Selection(pointer, false),
@@ -95,7 +106,14 @@ public record JsonReadOptions(Mode mode, Selection selection, NullPolicy nullPol
     }
 
     /**
-     * 从单文档定位数组并逐个读取直接元素；使用默认 null 策略和逐元素字节预算。
+     * 从包装文档定位数组并逐个绑定直接元素，适合接口返回超大 items 列表：
+     * <pre>{@code
+     * JsonReadOptions options = JsonReadOptions.selectElements(JsonPointer.of("/data/items"))
+     *     .withMaxValueBytes(1024 * 1024);
+     * // 此例每个 items 元素最多 1 MiB，数组总大小可远大于此值。
+     * }</pre>
+     * 不收集整个数组；默认 null 策略为 FAIL。路径不存在、不是数组或选中路径重复时失败，
+     * 仍须读取到 END 才完成整篇文档的验证。
      */
     public static JsonReadOptions selectElements(JsonPointer pointer) {
         return new JsonReadOptions(Mode.SINGLE_VALUE, new Selection(pointer, true),

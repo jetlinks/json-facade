@@ -1,8 +1,25 @@
 package org.jetlinks.json;
 
 /**
- * 单次操作独占的同步令牌写入器，不支持并发使用；Provider 持有编码器状态。
- * 按顺序配对容器开始、结束与字段名；关闭不补齐未完成文档，也不关闭调用方输出流。
+ * 手动拼装 JSON 对象和数组的写入器，适合边查数据边输出带包装字段的大结果。
+ * <pre>{@code
+ * var output = new java.io.ByteArrayOutputStream();
+ * try (JsonWriter writer = mapper.writer(output)) {
+ *     writer.beginObject();
+ *     writer.name("total");
+ *     writer.value(2);
+ *     writer.name("items");
+ *     writer.beginArray();
+ *     for (int id : new int[] {1, 2}) {
+ *         writer.value(java.util.Map.of("id", id)); // 实际可逐条写入查询得到的 DTO
+ *     }
+ *     writer.endArray();
+ *     writer.endObject();
+ * }
+ * // 默认配置输出 {"total":2,"items":[{"id":1},{"id":2}]}，未收集完整结果 List。
+ * }</pre>
+ * 每次操作独立创建，不支持并发。begin/end 必须配对，name 后须写一个值；
+ * 关闭不补齐未完成文档，也不关闭调用方输出流。适合阻塞式输出，不能任意暂停一个正在执行的序列化器。
  *
  * @since 1.0.0
  * @see JsonMapper#writer(java.io.OutputStream)
@@ -12,6 +29,8 @@ public interface JsonWriter extends AutoCloseable {
     /**
      * 返回当前操作的类型化业务属性，缺失时为 null；嵌套 Adapter 继承相同上下文。
      * 属性仅传递数据，不自动改变读写行为；调用方不得修改共享值。
+     * 例如 Adapter 内用 {@code Boolean debug = writer.attribute(INCLUDE_DEBUG);} 决定是否写出调试字段；
+     * 完整示例见 {@link JsonAttribute}。
      *
      * @since 1.0.0
      */
@@ -46,12 +65,15 @@ public interface JsonWriter extends AutoCloseable {
     void name(String name);
 
     /**
-     * 按当前映射器绑定配置写入一个完整值，允许 Java null。
+     * 按当前映射器的注解和 Adapter 写入一个完整值，允许 Java null。
+     * 例如 {@code writer.value(java.util.Map.of("id", "dev-1"));} 写出对象；
+     * {@code writer.value("{\"id\":1}");} 写出字符串，不会把文本当作原始 JSON 插入。
      */
     void value(Object value);
 
     /**
-     * 校验并原样写入数字文本，避免经 double 中转；不接受任意原始 JSON 片段。
+     * 校验并原样写入数字文本，适合保留业务小数的精度和表示，例如 {@code writer.number("123.4500");}。
+     * 不是写入任意 JSON 的入口；对象、NaN、Infinity 及非法数字文本会失败。
      */
     void number(String value);
 
