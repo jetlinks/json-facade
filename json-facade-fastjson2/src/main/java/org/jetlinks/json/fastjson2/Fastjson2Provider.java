@@ -24,12 +24,14 @@ import org.jetlinks.json.spi.JsonProvider;
  * 使用 {@link #nativeOptions()} 明确采用原生令牌限制；保留深度预算、完整根值和调用方 I/O 所有权。
  * 不支持中立 JsonModule/业务属性、手动游标及非阻塞会话；原生扩展通过 {@link Fastjson2Builder} 配置。
  * 直接绑定中立树（含 DTO 属性）须启用 DisableReferenceDetect，保留 $ref 字段；解析引用后建树用 readTree。
+ * 默认禁用 JSON 类名解析；原生配置显式重开时在构建/准备阶段输出 WARNING，不记录输入内容。
  * 每次构建及准备操作变体创建独立原生 Provider，发布后的映射器可并发复用。
  *
  * @since 1.0.0
  * @see JsonProvider
  */
 public final class Fastjson2Provider implements JsonProvider {
+    private static final System.Logger LOG = System.getLogger(Fastjson2Provider.class.getName());
     /**
      * 返回显式采用 fastjson2 原生字符串/数字限制的配置，其他项沿用平台默认值。
      * <pre>{@code
@@ -56,6 +58,10 @@ public final class Fastjson2Provider implements JsonProvider {
     }
 
     static JsonMapper prepare(JsonConfiguration configuration, JsonOperationOptions operation) {
+        return prepare(configuration, operation, true);
+    }
+
+    private static JsonMapper prepare(JsonConfiguration configuration, JsonOperationOptions operation, boolean diagnose) {
         JsonOptions options = overlay(configuration.options(), operation);
         require(options.maxStringLength() == Integer.MAX_VALUE
                 && options.maxNumberLength() == Integer.MAX_VALUE, "use Fastjson2Provider.nativeOptions()");
@@ -77,12 +83,27 @@ public final class Fastjson2Provider implements JsonProvider {
             validate(reader, writer, options);
             // compact 也在准备阶段完成，避免每次 writeCompact 重建配置或修改共享 Context。
             Fastjson2Mapper compact = options.pretty() ? (Fastjson2Mapper) prepare(configuration,
-                    operation.overlay(JsonOperationOptions.builder().pretty(false).build())) : null;
+                    operation.overlay(JsonOperationOptions.builder().pretty(false).build()), false) : null;
+            // compact 为内部派生，不重复输出相同配置的警告。
+            if (diagnose) {
+                warnTypeDiscovery(reader);
+            }
             return binding.initialize(new Fastjson2Mapper(configuration, operation, options, reader, writer, compact));
         } catch (JsonException error) {
             throw error;
         } catch (RuntimeException error) {
             throw new JsonException(JsonException.Kind.CONFIGURATION, "Cannot configure fastjson2", error);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void warnTypeDiscovery(JSONReader.Context reader) {
+        if (!reader.getProvider().isDisableAutoType() || reader.isEnabled(JSONReader.Feature.SupportAutoType)
+                || reader.isEnabled(JSONReader.Feature.SupportClassForName)
+                || reader.getContextAutoTypeBeforeHandler() != null
+                || reader.getProvider().getAutoTypeBeforeHandler() != null) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "fastjson2 已显式开启 JSON 类名解析能力；请限制可解析的类型，避免处理不可信的类型声明。");
         }
     }
 

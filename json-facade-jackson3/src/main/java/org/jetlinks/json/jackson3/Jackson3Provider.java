@@ -16,6 +16,7 @@ import tools.jackson.databind.ValueSerializer;
 import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.module.SimpleModule;
+import tools.jackson.databind.jsontype.PolymorphicTypeValidator;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
@@ -32,11 +33,24 @@ import org.jetlinks.json.spi.JsonProvider;
 /**
  * Jackson 3 的 ServiceLoader Provider，可跨构建复用；发布前完成全部配置。
  * 不注册全局映射器，不进行发布后配置变更；Spring 桥接由对应模块提供。
+ * 默认关闭 default typing 并拒绝 JSON 类名类型标识；原生策略显式重开或替换时在准备阶段警告。
  *
  * @since 1.0.0
  * @see JsonProvider
  */
 public final class Jackson3Provider implements JsonProvider {
+    private static final System.Logger LOG = System.getLogger(Jackson3Provider.class.getName());
+    // 在读取类名、加载子类之前拒绝；NAME 映射仍由原生实现处理。
+    private static final PolymorphicTypeValidator CLASS_NAMES_DISABLED = new PolymorphicTypeValidator.Base() {
+        @java.io.Serial
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Validity validateBaseType(tools.jackson.databind.DatabindContext context,
+                                         tools.jackson.databind.JavaType baseType) {
+            return Validity.DENIED;
+        }
+    };
     @Override
     public String id() {
         return "jackson3";
@@ -61,6 +75,8 @@ public final class Jackson3Provider implements JsonProvider {
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, options.failUnknownProperties())
                 .configure(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS, options.losslessNumbers())
                 .configure(SerializationFeature.INDENT_OUTPUT, options.pretty())
+                .deactivateDefaultTyping()
+                .polymorphicTypeValidator(CLASS_NAMES_DISABLED)
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         builder.changeDefaultPropertyInclusion(inclusion -> JsonInclude.Value.construct(
                 options.omitNulls() ? JsonInclude.Include.NON_NULL : JsonInclude.Include.ALWAYS,
@@ -82,7 +98,16 @@ public final class Jackson3Provider implements JsonProvider {
         builder.defaultAttributes(attributes.withSharedAttribute(JsonTreeBinding.class, binding));
         var mapper = builder.build();
         validateNativeConfiguration(mapper, options);
+        warnTypeDiscovery(mapper.deserializationConfig());
         return binding.initialize(new Jackson3Mapper(mapper, options));
+    }
+
+    static void warnTypeDiscovery(tools.jackson.databind.DeserializationConfig config) {
+        // 只诊断显式原生配置，不扫描 DTO；原生校验器负责 CLASS/MINIMAL_CLASS 类型标识。
+        if (config.getDefaultTyper(null) != null || config.getPolymorphicTypeValidator() != CLASS_NAMES_DISABLED) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "Jackson 3 已显式配置原生多态或覆盖 JSON 类名禁用策略；请限制可解析的类型，避免处理不可信的类型声明。");
+        }
     }
 
     private static void validateNativeConfiguration(tools.jackson.databind.json.JsonMapper mapper,

@@ -36,7 +36,10 @@ public class Fastjson2Benchmark {
     @Setup
     public void setup() {
         facade = Json.builder().provider("fastjson2").options(Fastjson2Provider.nativeOptions()).build();
-        reader = new JSONReader.Context(new ObjectReaderProvider(), JSONReader.Feature.UseNativeObject);
+        var readerProvider = new ObjectReaderProvider();
+        readerProvider.setDisableAutoType(true);
+        readerProvider.setAutoTypeBeforeHandler(null);
+        reader = new JSONReader.Context(readerProvider, JSONReader.Feature.UseNativeObject.mask);
         reader.setMaxLevel(facade.options().maxDepth());
         writer = new JSONWriter.Context(new ObjectWriterProvider(), JSONWriter.Feature.WriteNulls);
         writer.setMaxLevel(facade.options().maxDepth());

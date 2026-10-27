@@ -281,6 +281,48 @@ Jackson 的 `ObjectReader.at(...)` 过滤器会隐藏原始输入的尾随根值
 
 请在配置确定后复用操作映射器。轻量覆盖复用原生缓存；null 包含策略会在准备阶段复制或重建原生映射器并隔离序列化缓存，首次绑定需要预热。数组 null 位置不会删除；框架不先转树删改字段，也不在逐条记录时执行配置回调。
 
+### JSON 类名解析默认关闭
+
+默认不会因为 JSON 中出现 `{"@type":"org.example.Device"}` 就自动创建该类的对象。
+fastjson2 关闭 AutoType、SupportClassForName 并清除继承的 AutoType 处理器；
+在公开原生类型解析入口落实禁用开关，覆盖 JVM 类型接受列表，不修改全局配置。
+Jackson 2/3 关闭 default typing，使用原生校验器拒绝 CLASS/MINIMAL_CLASS 类型标识。
+DTO 已声明的逻辑名称子类型映射（Jackson NAME、fastjson2 seeAlso）仍可使用，普通字段注解和 `$ref` 不受影响。
+
+确实需要按 JSON 类名选择类型时，通过原生配置显式启用并限制允许类型。例如 fastjson2：
+
+```java
+JsonMapper typed = mapper.withOptions(JsonOperationOptions.builder()
+    .nativeReader(com.alibaba.fastjson2.JSONReader.Context.class, context -> {
+        context.getProvider().setDisableAutoType(false);
+        context.config(com.alibaba.fastjson2.JSONReader.autoTypeFilter(Device.class));
+        return context;
+    }).build()); // 仅允许指定类型；准备时输出 WARNING
+```
+
+Jackson 2 对 DTO 上的类名类型标识可配置受限原生校验器：
+
+```java
+JsonMapper typed = Json.builder().provider("jackson2")
+    .configureNative(com.fasterxml.jackson.databind.json.JsonMapper.Builder.class, builder ->
+        builder.polymorphicTypeValidator(
+            com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator.builder()
+                .allowIfSubType(Device.class).build()))
+    .build();
+```
+
+这不会自动给无多态声明的 DTO 添加类型标识。需要全局 default typing 时，仍通过原生
+`activateDefaultTyping...` API 和受限校验器启用；Jackson 3 使用 tools.jackson 对应类型。
+替换门面校验器、开启 default typing、设置 fastjson2 AutoType/类名加载开关或处理器，
+都会在构建/准备时经 JDK `System.Logger` 输出 WARNING，logger 名称为 Provider 类全名。
+不记录输入内容，也不在每次读写时重复记录；即使替换为另一个受限校验器，也提示原生策略已被显式覆盖。
+
+Jackson 2 原生适配会为默认 ObjectMapper 关闭类名解析；宿主显式配置的 default typing/校验器保留并警告。
+JVM 全局配置、源 ObjectMapper 不会被修改。自定义原生读取器、Adapter 和注解处理器由应用负责，
+门面不会扫描这些扩展的任意逻辑；警告也不替代类型白名单。
+Jackson 类型策略须在构建时通过 configureNative 配置。操作 reader 共享按类型缓存的反序列化器，
+不能用另一个映射器的配置替换 default typer/校验器；这种配置会在准备时拒绝，防止污染基础映射器。
+
 <a id="binding"></a>
 ## 对象绑定、泛型与转换
 
@@ -674,7 +716,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 315 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、fastjson2 树引用边界、Jackson 过滤 reader 拒绝、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 329 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、fastjson2 树引用边界、Jackson 过滤 reader 拒绝、默认类型探测关闭与手动启用警告、JVM 类型配置隔离、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 

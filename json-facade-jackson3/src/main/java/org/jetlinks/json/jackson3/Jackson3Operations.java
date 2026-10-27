@@ -45,6 +45,7 @@ final class Jackson3Operations {
                     defaults.maxDepth(), defaults.maxStringLength(), defaults.maxNumberLength(),
                     defaults.maxValueBytes());
             validateOverrides(overrides, effective);
+            Jackson3Provider.warnTypeDiscovery(reader.getConfig());
             JsonTreeBinding binding = new JsonTreeBinding();
             reader = reader.withAttribute(JsonTreeBinding.class, binding);
             return binding.initialize(new Jackson3Mapper(mapper, effective, base, overrides, reader, writer));
@@ -102,6 +103,11 @@ final class Jackson3Operations {
     }
 
     private static void validateResources(ObjectMapper mapper, ObjectReader reader, ObjectWriter writer) {
+        // reader 共享按类型缓存的反序列化器；更换多态策略须在构建期使用独立映射器。
+        var policy = mapper.deserializationConfig();
+        require(reader.getConfig().getDefaultTyper(null) == policy.getDefaultTyper(null)
+                && reader.getConfig().getPolymorphicTypeValidator() == policy.getPolymorphicTypeValidator(),
+                "type-discovery policy (use configureNative at build time)");
         require(reader.parserFactory() == mapper.tokenStreamFactory()
                 && writer.generatorFactory() == mapper.tokenStreamFactory(), "original stream factory");
         require(reader.isEnabled(DeserializationFeature.FAIL_ON_TRAILING_TOKENS), "single-root reads");

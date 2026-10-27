@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.core.StreamWriteFeature;
 import com.fasterxml.jackson.core.filter.FilteringParserDelegate;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectWriter;
@@ -46,6 +47,7 @@ final class Jackson2Operations {
                     defaults.maxDepth(), defaults.maxStringLength(), defaults.maxNumberLength(),
                     defaults.maxValueBytes());
             validateOverrides(overrides, effective);
+            Jackson2Provider.warnTypeDiscovery(reader.getConfig());
             JsonTreeBinding binding = new JsonTreeBinding();
             reader = reader.withAttribute(JsonTreeBinding.class, binding);
             return binding.initialize(new Jackson2Mapper(mapper, effective, base, overrides, reader, writer));
@@ -115,6 +117,16 @@ final class Jackson2Operations {
     }
 
     private static void validateResources(ObjectMapper mapper, ObjectReader reader, ObjectWriter writer) {
+        // reader 共享按类型缓存的反序列化器；更换多态策略须在构建期使用独立映射器。
+        var policy = mapper.getDeserializationConfig();
+        var readConfig = reader.getConfig();
+        var blockUnsafe = MapperFeature.BLOCK_UNSAFE_POLYMORPHIC_BASE_TYPES;
+        // 原生 getter 会为此开关生成临时校验器，比较原始策略及开关，避免误判相同配置。
+        require(readConfig.getDefaultTyper(null) == policy.getDefaultTyper(null)
+                && readConfig.isEnabled(blockUnsafe) == policy.isEnabled(blockUnsafe)
+                && readConfig.with(blockUnsafe, false).getPolymorphicTypeValidator()
+                == policy.with(blockUnsafe, false).getPolymorphicTypeValidator(),
+                "type-discovery policy (use configureNative at build time)");
         require(reader.getFactory() == mapper.getFactory() && writer.getFactory() == mapper.getFactory(),
                 "original stream factory");
         require(reader.isEnabled(DeserializationFeature.FAIL_ON_TRAILING_TOKENS), "single-root reads");

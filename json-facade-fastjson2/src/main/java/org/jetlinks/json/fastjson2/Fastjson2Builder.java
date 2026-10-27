@@ -19,8 +19,15 @@ public final class Fastjson2Builder {
     private final JSONReader.Context reader;
     private final JSONWriter.Context writer;
 
+    // SupportAutoType 已被原生标为过时；这里只显式关闭它，避免继承 JVM 全局开关。
+    @SuppressWarnings("deprecation")
     Fastjson2Builder(JsonOptions options) {
-        reader = new JSONReader.Context(new ObjectReaderProvider());
+        var provider = new ReaderProvider();
+        provider.setDisableAutoType(true);
+        provider.setAutoTypeBeforeHandler(null);
+        reader = new JSONReader.Context(provider);
+        reader.config(JSONReader.Feature.SupportAutoType, false);
+        reader.config(JSONReader.Feature.SupportClassForName, false);
         reader.config(JSONReader.Feature.UseNativeObject);
         reader.config(JSONReader.Feature.UseDoubleForDecimals, !options.losslessNumbers());
         reader.config(JSONReader.Feature.ErrorOnUnknownProperties, options.failUnknownProperties());
@@ -31,7 +38,10 @@ public final class Fastjson2Builder {
         writer.setMaxLevel(options.maxDepth());
     }
 
-    /** 借用原生读取配置，可注册 ObjectReader、Mixin 或设置日期格式；直接绑定中立树须配置 DisableReferenceDetect。 */
+    /**
+     * 借用原生读取配置，可注册 ObjectReader、Mixin 或设置日期格式；直接绑定中立树须配置 DisableReferenceDetect。
+     * 默认关闭 AutoType/按名称加载 Class 并清除继承的 AutoType 处理器；显式重开时在准备阶段警告。
+     */
     public JSONReader.Context reader() {
         return reader;
     }
@@ -39,5 +49,13 @@ public final class Fastjson2Builder {
     /** 借用原生写入配置，可注册 ObjectWriter、Mixin、命名策略或设置引用检测。 */
     public JSONWriter.Context writer() {
         return writer;
+    }
+
+    private static final class ReaderProvider extends ObjectReaderProvider {
+        @Override
+        public Class<?> checkAutoType(String typeName, Class<?> expectedClass, long features) {
+            // 原生通用 Object 路径仍会检查 JVM 接受列表，在公开解析入口统一落实禁用开关。
+            return isDisableAutoType() ? null : super.checkAutoType(typeName, expectedClass, features);
+        }
     }
 }

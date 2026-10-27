@@ -19,6 +19,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.module.SimpleModule;
+import com.fasterxml.jackson.databind.jsontype.PolymorphicTypeValidator;
+import com.fasterxml.jackson.databind.jsontype.impl.LaissezFaireSubTypeValidator;
 import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonOptions;
@@ -35,16 +37,30 @@ import org.jetlinks.json.spi.JsonProvider;
 /**
  * Jackson 2 的 ServiceLoader Provider，可跨构建复用；发布前完成全部配置。
  * 原生适配先复制宿主配置，再落实 facade 的资源契约，不修改源映射器。
+ * 默认关闭 default typing 并拒绝 JSON 类名类型标识；原生策略显式重开或替换时在准备阶段警告。
  *
  * @since 1.0.0
  * @see JsonProvider
  */
 public final class Jackson2Provider implements JsonProvider {
+    private static final System.Logger LOG = System.getLogger(Jackson2Provider.class.getName());
+    // 在读取类名、加载子类之前拒绝；NAME 映射仍由原生实现处理。
+    private static final PolymorphicTypeValidator CLASS_NAMES_DISABLED = new PolymorphicTypeValidator.Base() {
+        @java.io.Serial
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Validity validateBaseType(com.fasterxml.jackson.databind.cfg.MapperConfig<?> config,
+                                         com.fasterxml.jackson.databind.JavaType baseType) {
+            return Validity.DENIED;
+        }
+    };
 
     /**
      * 为已完成配置的 JSON 映射器创建快照，保留原生模块及包含策略。
      * 源映射器和工厂不变；自定义序列化器及处理器按 {@code ObjectMapper.copy()} 语义共享，须线程安全。
      * 后续源配置变化不会同步到快照。
+     * 默认原生映射器会关闭类名类型标识；宿主显式配置的多态策略保留并输出 WARNING。
      *
      * @param source 已完成配置且支持 {@code ObjectMapper.copy()} 的 JSON 映射器
      * @return 配置独立的 facade，使用默认增量单值字节预算
@@ -75,6 +91,12 @@ public final class Jackson2Provider implements JsonProvider {
         require("JSON".equals(source.getFactory().getFormatName()), "JSON format required for adaptation");
         try {
             ObjectMapper snapshot = source.copy();
+            // 默认原生映射器也落实类名禁用策略；宿主显式配置的多态保留并警告，不修改源对象。
+            var sourceConfig = snapshot.getDeserializationConfig();
+            if (sourceConfig.getDefaultTyper(null) == null
+                    && sourceConfig.getPolymorphicTypeValidator() == LaissezFaireSubTypeValidator.instance) {
+                snapshot.setPolymorphicTypeValidator(CLASS_NAMES_DISABLED);
+            }
             JsonFactory factory = snapshot.getFactory();
             int depth = Math.min(factory.streamReadConstraints().getMaxNestingDepth(),
                     factory.streamWriteConstraints().getMaxNestingDepth());
@@ -100,6 +122,7 @@ public final class Jackson2Provider implements JsonProvider {
                     factory.isEnabled(StreamReadFeature.STRICT_DUPLICATE_DETECTION), omitNulls,
                     snapshot.isEnabled(SerializationFeature.INDENT_OUTPUT), depth,
                     limits.getMaxStringLength(), limits.getMaxNumberLength(), maxValueBytes);
+            warnTypeDiscovery(snapshot.getDeserializationConfig());
             return bindTree(snapshot, options);
         } catch (RuntimeException error) {
             throw new JsonException(JsonException.Kind.CONFIGURATION, "Cannot adapt native JSON mapper", error);
@@ -130,6 +153,8 @@ public final class Jackson2Provider implements JsonProvider {
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, options.failUnknownProperties())
                 .configure(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS, options.losslessNumbers())
                 .configure(SerializationFeature.INDENT_OUTPUT, options.pretty())
+                .deactivateDefaultTyping()
+                .polymorphicTypeValidator(CLASS_NAMES_DISABLED)
                 .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         builder.defaultPropertyInclusion(JsonInclude.Value.construct(
                 options.omitNulls() ? JsonInclude.Include.NON_NULL : JsonInclude.Include.ALWAYS,
@@ -143,7 +168,16 @@ public final class Jackson2Provider implements JsonProvider {
         configuration.configureNative(builder);
         var mapper = builder.build();
         validateNativeConfiguration(mapper, options);
+        warnTypeDiscovery(mapper.getDeserializationConfig());
         return bindTree(mapper, options);
+    }
+
+    static void warnTypeDiscovery(com.fasterxml.jackson.databind.DeserializationConfig config) {
+        // 只诊断显式原生配置，不扫描 DTO；原生校验器负责 CLASS/MINIMAL_CLASS 类型标识。
+        if (config.getDefaultTyper(null) != null || config.getPolymorphicTypeValidator() != CLASS_NAMES_DISABLED) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "Jackson 2 已显式配置原生多态或覆盖 JSON 类名禁用策略；请限制可解析的类型，避免处理不可信的类型声明。");
+        }
     }
 
     private static JsonMapper bindTree(ObjectMapper nativeMapper, JsonOptions options) {

@@ -104,6 +104,42 @@ order. Type mismatches and conflicts with authoritative `JsonOptions` fail at
 build time. Callbacks must not retain builders or mutate published mappers.
 Native annotations, modules and custom handlers remain explicit engine boundaries.
 
+### Class-name type discovery
+
+By default, JSON-supplied class names (for example `{"@type":"org.example.Type"}`)
+do not choose arbitrary runtime classes. Ordinary target types, field annotations,
+reference handling and DTO-declared logical-name subtype mappings remain supported.
+This uses native configuration, not a JSON field scanner or replacement resolver.
+
+Fastjson2 explicitly disables provider AutoType, `SupportAutoType` and
+`SupportClassForName`, and removes the inherited provider AutoTypeBeforeHandler.
+JVM global flags/handlers are not modified.
+The native `checkAutoType` extension enforces the provider disable flag before
+delegation, covering native Object reads that otherwise consult JVM accept lists.
+No native resolver or allow-list implementation is copied.
+Jackson 2/3 explicitly deactivate
+default typing and install a native validator that denies class-name polymorphism
+before resolving/loading a subtype;
+this also rejects annotation-driven CLASS/MINIMAL_CLASS IDs. NAME IDs remain native.
+
+Native opt-ins emit a WARNING through `System.Logger` under the Provider class
+name during construction/preparation, with no input contents or per-value logging.
+Fastjson2 diagnoses provider re-enablement, either reader feature and context/provider
+before-handlers; its internal compact variant does not duplicate the warning.
+Jackson diagnoses default typing or replacement of the facade's validator at
+construction and preparation. Even a restrictive replacement is an explicit
+policy override and is reported. An unchanged empty operation does not prepare or log.
+An operation reader must retain its mapper's default typer and validator: native
+root-deserializer caches are shared by type and cannot isolate a replacement
+policy. Cross-policy reader configurations fail before the preparation probe can
+populate shared caches. Change these policies through build-time `configureNative`.
+
+Jackson 2 adaptation secures a default native mapper without changing its source;
+explicit default typing/custom validators are preserved and warned. Custom native
+readers, adapters and annotation handlers remain trusted extensions: configuration
+diagnostics do not inspect arbitrary user code or scan all DTO metadata. Validators
+and handlers must constrain permitted types; warnings do not provide that validation.
+
 ### Operation configuration
 
 `JsonMapper.withOptions(JsonOperationOptions)` prepares an
@@ -435,10 +471,10 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 315 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 329 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
-module's 80% branch-coverage gate pass. Aggregate branch coverage is 1357/1445
-(93.91%); fastjson2 covers 75/76 branches (98.68%). Tests cover all three Providers, configured
+module's 80% branch-coverage gate pass. Aggregate branch coverage is 1390/1481
+(93.86%); fastjson2 covers 89/90 branches (98.89%). Tests cover all three Providers, configured
 extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
 ownership. The [CI matrix](../.github/workflows/verify.yml) also runs small-chunk,
 closed-owner, tree-retention and pooled-buffer regressions.
@@ -447,6 +483,11 @@ nested DTO/generic tree bindings, Jackson filtered-reader rejection and trailing
 roots across all synchronous inputs. Preparation does not deserialize a probe
 through business handlers. These checks do not change ordinary DTO read/write or
 streaming hot paths; the corresponding performance results below remain applicable.
+Type-discovery regressions cover inert class-name tags, CLASS/MINIMAL_CLASS denial
+before subclass initialization, logical-name subtype compatibility, warning counts
+and payload privacy, adapted/native overrides and cross-policy reader rejection.
+An isolated fastjson2 JVM installs global accept lists/handlers and ClassForName,
+then verifies that facade defaults remain closed without mutating those globals.
 Reference regressions cover configurable structural-copy limits, shared acyclic
 children, native object-ID mixins, per-record ID isolation and nested Adapter
 context reuse. Four independent Java 17/21 and Provider runs each consume over
@@ -489,28 +530,25 @@ Fastjson2 JMH uses Java 21, a 512 MiB heap, GC profiling, two forks, three
 300 ms warmups and four 300 ms measurements. Native/facade paths share depth,
 number/null configuration, complete-root checks and independently owned byte[]
 results, operating on one/1000 three-field Map records. Conversion uses the same
-UTF-8 representation in both paths. Initial results are mean ± JMH error:
+UTF-8 representation in both paths. Read rows are revalidated with class-name
+discovery explicitly disabled in both implementations; unchanged write/conversion
+paths reuse their baseline. Results are mean ± JMH error:
 
 | Operation | Records | Native µs | Facade µs | Native / facade B per operation |
 | --- | --- | --- | --- | --- |
-| Read byte[] | 1 | 0.078 ± 0.002 | 0.080 ± 0.004 | 544 / 544 |
+| Read byte[] | 1 | 0.080 ± 0.004 | 0.080 ± 0.002 | 544 / 544 |
 | Write byte[] | 1 | 0.054 ± 0.003 | 0.054 ± 0.002 | 152 / 176 |
 | Convert | 1 | 0.143 ± 0.003 | 0.162 ± 0.012 | 696 / 744 |
-| Read byte[] | 1000 | 75.77 ± 4.04 | 77.77 ± 10.66 | 372306 / 372306 |
+| Read byte[] | 1000 | 75.68 ± 3.04 | 75.01 ± 4.34 | 372306 / 372306 |
 | Write byte[] | 1000 | 42.20 ± 1.98 | 43.09 ± 5.50 | 66945 / 66945 |
 | Convert | 1000 | 119.95 ± 10.77 | 117.30 ± 5.40 | 439251 / 439299 |
 
-A targeted 1000-record read/write repeat uses two forks and five 1 s warmups
-and measurements. Read times are 77.60 ± 3.91 / 121.11 ± 82.34 µs
-(native/facade), and write times are 43.35 ± 1.05 / 49.59 ± 8.41 µs.
-The noisy facade read sample prevents a reliable CPU-overhead conclusion.
-Write allocation in that repeat is 66944 / 66968 B; JIT optimization affects
-whether the small operation wrapper survives. These fixtures show fixed small
-allocation differences rather than an added allocation per record; they do not
-prove negligible CPU overhead for arbitrary bindings, streams or trees.
-Preparing an omit-null variant costs about 3.9–4.0 µs and 16.3–17.0 kB,
-excluding first-use serializer warmup. Reuse prepared mappers and account for
-whole-value buffering on synchronous streams and conversion.
+Read timing intervals overlap and normalized allocation matches native;
+configuration checks/warnings introduce no added allocation per record in these
+fixtures. JIT optimization can affect whether a small operation wrapper survives.
+These results do not prove negligible CPU overhead for arbitrary bindings, streams
+or trees. Reuse prepared mappers and account for whole-value buffering on
+synchronous streams and conversion.
 
 Operation-options JMH uses Java 21, a 512 MiB heap, GC profiling, two forks,
 three 300 ms warmups and four 300 ms measurements. It compares the same one/1000
