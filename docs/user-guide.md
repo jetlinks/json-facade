@@ -114,7 +114,7 @@ JsonMapper export = mapper.withOptions(JsonOperationOptions.builder()
 | --- | --- |
 | 同步 String/byte[]/InputStream/Reader 绑定、泛型 | 支持，完整单值驻留内存，拒绝空输入和尾随内容 |
 | 输出 String/byte[]/OutputStream/Writer | 支持，原生先缓冲完整单值；调用方 I/O 保持打开 |
-| JsonValue、结构工厂、wrap、Pointer、转换 | 支持；convert 复用原生 JSON UTF-8 单值缓冲 |
+| JsonValue、结构工厂、wrap、Pointer、转换 | 支持；直接绑定中立树须关闭原生引用解析，见下例；convert 复用原生 JSON UTF-8 单值缓冲 |
 | 单次数字精度、null、pretty 配置 | 支持；准备后复用，compact 输出也在准备阶段完成配置 |
 | 原生 ObjectReader/ObjectWriter、Mixin、引用检测 | 通过 Fastjson2Builder 配置，转换沿用相同 JSON 处理器 |
 | 有限字符串/数字长度预算 | 拒绝；nativeOptions 将两项设为 Integer.MAX_VALUE，采用原生限制 |
@@ -128,6 +128,24 @@ JsonMapper export = mapper.withOptions(JsonOperationOptions.builder()
 或 `JSONWriter.Context`，须返回相同 Provider 的上下文，不能冲突于通用配置。
 准备变体会创建独立原生 Provider，并可能重放构建/操作回调；回调须无外部副作用，
 不得保留可变配置。每次业务读写不会重建配置，也不会修改共享上下文。
+
+需要解析 fastjson2 `$ref` 后按树取值时，使用 `mapper.readTree(json)`。
+它在原生引用解析完成后复制树；共享子对象复制为独立节点，环引用以 `LIMIT` 失败。
+直接 `read(json, JsonValue.class)`（同样适用于 JsonObject、JsonArray、DTO 属性和泛型元素）
+须显式关闭原生引用解析，避免原生延迟任务更新不到已复制的树：
+
+```java
+JsonMapper literalTrees = mapper.withOptions(JsonOperationOptions.builder()
+    .nativeReader(com.alibaba.fastjson2.JSONReader.Context.class, context -> {
+        context.config(com.alibaba.fastjson2.JSONReader.Feature.DisableReferenceDetect);
+        return context;
+    }).build());
+JsonValue value = literalTrees.read("{\"link\":{\"$ref\":\"$.item\"}}", JsonValue.class);
+String reference = value.get("link").get("$ref").asString(); // "$.item"，保留为普通字段
+```
+
+该变体的所有读取都会把 `$ref` 当作普通字段。原映射器的普通 DTO/Map/List 仍沿用原生引用解析。
+直接绑定限制在调用原生树读取器时检查，InputStream/Reader 可能已读取。
 
 fastjson2 自带的 JSONStreamReader 可阻塞式逐行读取，但公开入口使用默认上下文，
 无法直接承接这里的配置和非阻塞会话生命周期，因此没有包装成门面的 NDJSON 支持。
@@ -255,6 +273,9 @@ JsonMapper sorted = mapper.withOptions(JsonOperationOptions.builder()
 ```
 
 上述原生类型适用于 Jackson 2；Jackson 3 使用 tools.jackson 对应类型。nativeReader 方式相同。Provider 在准备时先检查整批类型，再按注册顺序执行回调；回调失败、返回 null、与显式通用项冲突或破坏调用方 I/O、单根值、解析预算契约时立即失败。回调须从提供的读写器派生，不得替换流工厂、绑定共享可变对象或修改已发布原生对象。
+
+Jackson 的 `ObjectReader.at(...)` 过滤器会隐藏原始输入的尾随根值，因此在准备时拒绝。
+选择嵌套内容请使用门面的 `JsonReadOptions.selectValue/selectElements`，保留完整文档校验。
 
 连续调用 withOptions 时，通用项和同键属性后值覆盖前值；原生回调累积并可在派生时重放，须无外部副作用。容器不可变不等于属性值或原生处理器不可变，这些共享值仍须稳定且线程安全。
 
@@ -653,7 +674,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 309 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 315 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、fastjson2 树引用边界、Jackson 过滤 reader 拒绝、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 

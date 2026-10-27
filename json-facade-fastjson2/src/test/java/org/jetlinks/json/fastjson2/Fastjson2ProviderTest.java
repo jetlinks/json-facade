@@ -165,7 +165,7 @@ class Fastjson2ProviderTest {
 
     @Test
     void neutralTreesKeepTheirOperationOwnerAndIsolateContainers() {
-        JsonMapper base = mapper();
+        JsonMapper base = literalTrees(mapper());
         JsonMapper operation = base.withOptions(JsonOperationOptions.builder().omitNulls(true).build());
         JsonObject object = operation.read("{\"x\":1,\"absent\":null}", JsonObject.class);
         JsonArray array = operation.read("[1,null]", JsonArray.class);
@@ -190,6 +190,72 @@ class Fastjson2ProviderTest {
         assertEquals(3, borrowed.get("later").asInt());
         assertThrows(UnsupportedOperationException.class, () -> borrowed.put("x", 1));
         assertEquals(List.of(1), base.readTree("[1]").as(List.class));
+    }
+
+    @Test
+    void resolvedReferencesAreCopiedOnlyAfterWholeRootBinding() {
+        JsonMapper json = Json.builder().provider("fastjson2").options(Fastjson2Provider.nativeOptions())
+                .configureNative(Fastjson2Builder.class,
+                        b -> b.writer().config(JSONWriter.Feature.ReferenceDetection)).build();
+        Map<String, Object> child = Map.of("n", 1);
+        Map<String, Object> source = new LinkedHashMap<>();
+        source.put("a", child);
+        source.put("b", child);
+        String input = json.write(source);
+        assertTrue(input.contains("$ref"));
+        Map<?, ?> resolved = json.read(input, Map.class);
+        assertSame(resolved.get("a"), resolved.get("b"));
+        JsonValue tree = json.readTree(input);
+        assertEquals(1, tree.get("a").get("n").asInt());
+        assertEquals(1, tree.get("b").get("n").asInt());
+        tree.get("a").asObject().put("n", 2);
+        assertEquals(1, tree.get("b").get("n").asInt());
+        String array = "[{\"n\":1},{\"$ref\":\"$[0]\"}]";
+        assertEquals(1, json.readTree(array).get(1).get("n").asInt());
+        String cycle = "{\"a\":{\"$ref\":\"$\"}}";
+        assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, () -> json.readTree(cycle)).kind());
+        configuration(() -> json.read(input, JsonValue.class));
+        configuration(() -> json.read(input.getBytes(StandardCharsets.UTF_8), JsonObject.class));
+        configuration(() -> json.read(new StringReader(array), JsonArray.class));
+        configuration(() -> json.read(new ByteArrayInputStream(cycle.getBytes(StandardCharsets.UTF_8)), JsonValue.class));
+        assertThrows(JsonException.class, () -> json.read(
+                "{\"tree\":{\"a\":{\"n\":1},\"b\":{\"$ref\":\"$.tree.a\"}}}", TreeValueHolder.class));
+        assertThrows(JsonException.class, () -> json.read(array, JsonType.listOf(JsonType.of(JsonValue.class))));
+    }
+
+    @Test
+    void directNeutralTreesPreserveLiteralReferencesWithNativeDetectionDisabled() {
+        JsonMapper base = mapper();
+        JsonMapper literal = literalTrees(base);
+        String object = "{\"a\":{\"n\":1},\"b\":{\"$ref\":\"$.a\"}}";
+        JsonValue tree = literal.read(object, JsonValue.class);
+        assertEquals("$.a", tree.get("b").get("$ref").asString());
+        assertEquals(1, tree.get("a").get("n").asInt());
+        assertEquals("$.a", literal.read(object, JsonObject.class).get("b").get("$ref").asString());
+        String array = "[{\"n\":1},{\"$ref\":\"$[0]\"}]";
+        assertEquals("$[0]", literal.read(array, JsonArray.class).get(1).get("$ref").asString());
+        String nested = "{\"tree\":{\"a\":{\"n\":1},\"b\":{\"$ref\":\"$.tree.a\"}}}";
+        assertEquals("$.tree.a", literal.read(nested, TreeValueHolder.class).tree().get("b").get("$ref").asString());
+        assertEquals("$[0]", literal.read(array, JsonType.listOf(JsonType.of(JsonValue.class)))
+                .get(1).get("$ref").asString());
+        assertEquals("$", literal.read("{\"a\":{\"$ref\":\"$\"}}", JsonValue.class).get("a").get("$ref").asString());
+        assertEquals(object, literal.write(tree));
+        assertEquals(1, base.readTree(object).get("b").get("n").asInt());
+        configuration(() -> base.read(object, JsonValue.class));
+        JsonMapper restored = literal.withOptions(JsonOperationOptions.builder()
+                .nativeReader(JSONReader.Context.class, context -> {
+                    context.config(JSONReader.Feature.DisableReferenceDetect, false);
+                    return context;
+                }).build());
+        configuration(() -> restored.read(object, JsonValue.class));
+        assertEquals("$.a", literal.read(object, JsonValue.class).get("b").get("$ref").asString());
+    }
+
+    private static JsonMapper literalTrees(JsonMapper mapper) {
+        return mapper.withOptions(JsonOperationOptions.builder().nativeReader(JSONReader.Context.class, context -> {
+            context.config(JSONReader.Feature.DisableReferenceDetect);
+            return context;
+        }).build());
     }
 
     @Test
@@ -429,6 +495,7 @@ class Fastjson2ProviderTest {
     public record Item(int value) { }
     public record Label(String value) { }
     public record TreeHolder(JsonObject object, JsonArray array) { }
+    public record TreeValueHolder(JsonValue tree) { }
     public record NativeName(@JSONField(name = "native_value") int value) { }
     public static class Node {
         public String name;

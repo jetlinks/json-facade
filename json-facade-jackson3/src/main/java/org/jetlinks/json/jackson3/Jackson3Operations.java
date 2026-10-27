@@ -3,6 +3,7 @@ package org.jetlinks.json.jackson3;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import tools.jackson.core.StreamReadFeature;
 import tools.jackson.core.StreamWriteFeature;
+import tools.jackson.core.filter.FilteringParserDelegate;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.ObjectReader;
@@ -120,9 +121,11 @@ final class Jackson3Operations {
     }
 
     private static boolean validateStreams(ObjectMapper mapper, ObjectReader reader, ObjectWriter writer) {
-        // 只创建无业务数据的原生游标，校验实际生效的打印器和限制；不访问调用方 I/O。
-        try (var parser = reader.createParser("null");
+        // 空输入只初始化原生迭代器，不绑定业务值；过滤游标会掩盖原始 EOF，须在准备阶段拒绝。
+        try (var values = reader.forType(Object.class).readValues("");
              var generator = writer.createGenerator(java.io.OutputStream.nullOutputStream())) {
+            var parser = values.parser();
+            require(!(parser instanceof FilteringParserDelegate), "unfiltered single-root reads");
             require(!generator.isEnabled(StreamWriteFeature.AUTO_CLOSE_TARGET), "caller-owned output");
             require(!generator.isEnabled(StreamWriteFeature.AUTO_CLOSE_CONTENT), "incomplete-document handling");
             var actual = parser.streamReadConstraints();

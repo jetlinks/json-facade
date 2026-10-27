@@ -23,6 +23,7 @@ import org.jetlinks.json.spi.JsonProvider;
  * fastjson2 同步绑定 Provider，可通过 ServiceLoader 或显式实例选择。
  * 使用 {@link #nativeOptions()} 明确采用原生令牌限制；保留深度预算、完整根值和调用方 I/O 所有权。
  * 不支持中立 JsonModule/业务属性、手动游标及非阻塞会话；原生扩展通过 {@link Fastjson2Builder} 配置。
+ * 直接绑定中立树（含 DTO 属性）须启用 DisableReferenceDetect，保留 $ref 字段；解析引用后建树用 readTree。
  * 每次构建及准备操作变体创建独立原生 Provider，发布后的映射器可并发复用。
  *
  * @since 1.0.0
@@ -133,6 +134,9 @@ public final class Fastjson2Provider implements JsonProvider {
         return new ObjectReader<>() {
             @Override
             public T readObject(JSONReader input, Type type, Object name, long features) {
+                // 原生引用任务在整根绑定后才执行，不能先复制子树；保留 $ref 字段需显式关闭引用解析。
+                require(input.isEnabled(JSONReader.Feature.DisableReferenceDetect),
+                        "direct neutral-tree binding requires DisableReferenceDetect; use readTree for resolved references");
                 Object value = input.readAny();
                 JsonValue tree = neutral && value == null ? JsonValue.NULL : JsonValues.of(value, binding.mapper());
                 return view.apply(tree);

@@ -31,7 +31,7 @@ public final class Fastjson2Builder {
         writer.setMaxLevel(options.maxDepth());
     }
 
-    /** 借用原生读取配置，可注册 ObjectReader、Mixin、命名策略或设置日期格式。 */
+    /** 借用原生读取配置，可注册 ObjectReader、Mixin 或设置日期格式；直接绑定中立树须配置 DisableReferenceDetect。 */
     public JSONReader.Context reader() {
         return reader;
     }

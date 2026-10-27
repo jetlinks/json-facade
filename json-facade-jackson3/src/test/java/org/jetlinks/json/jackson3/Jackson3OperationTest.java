@@ -80,6 +80,51 @@ class Jackson3OperationTest {
     }
 
     @Test
+    void filteredNativeReadersAreRejectedBeforeAnyValueBinding() {
+        JsonMapper base = mapper();
+        for (String pointer : List.of("", "/a", "/a/0")) {
+            assertEquals(JsonException.Kind.CONFIGURATION, assertThrows(JsonException.class,
+                    () -> base.withOptions(JsonOperationOptions.builder().nativeReader(ObjectReader.class,
+                            reader -> reader.at(pointer)).build())).kind());
+            assertEquals(JsonException.Kind.CONFIGURATION, assertThrows(JsonException.class,
+                    () -> base.withOptions(JsonOperationOptions.builder().nativeReader(ObjectReader.class,
+                            reader -> reader.at(tools.jackson.core.JsonPointer.compile(pointer))).build())).kind());
+        }
+        JsonMapper operation = base.withOptions(JsonOperationOptions.builder().nativeReader(ObjectReader.class,
+                reader -> reader.with(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY)).build());
+        assertEquals(Map.of("a", 1), operation.read("{\"a\":1}", Map.class));
+        for (String trailing : List.of("42", "{\"b\":2}", "{\"a\":2}")) {
+            String input = "{\"a\":1} " + trailing;
+            byte[] bytes = input.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            assertThrows(JsonException.class, () -> operation.read(input, Object.class));
+            assertThrows(JsonException.class, () -> operation.read(bytes, Object.class));
+            assertThrows(JsonException.class, () -> operation.read(new java.io.ByteArrayInputStream(bytes), Object.class));
+            assertThrows(JsonException.class, () -> operation.read(new java.io.StringReader(input), Object.class));
+        }
+    }
+
+    @Test
+    void preparationDoesNotBindAValueThroughNativeHandlers() {
+        var calls = new AtomicInteger();
+        var module = new SimpleModule();
+        module.addDeserializer(Object.class, new tools.jackson.databind.ValueDeserializer<>() {
+            @Override
+            public Object deserialize(JsonParser input, tools.jackson.databind.DeserializationContext context) {
+                calls.incrementAndGet();
+                input.skipChildren();
+                return "bound";
+            }
+        });
+        JsonMapper base = Json.builder().provider(new Jackson3Provider())
+                .configureNative(tools.jackson.databind.json.JsonMapper.Builder.class, builder -> builder.addModule(module))
+                .build();
+        JsonMapper operation = base.withOptions(JsonOperationOptions.builder().pretty(true).build());
+        assertEquals(0, calls.get());
+        assertEquals("bound", operation.read("{}", Object.class));
+        assertEquals(1, calls.get());
+    }
+
+    @Test
     void nativeCallbacksRejectConflictsAndOwnershipBypassesDuringPreparation() {
         JsonMapper base = mapper();
         List<JsonOperationOptions> invalid = List.of(

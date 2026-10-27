@@ -36,6 +36,18 @@ the JSON representation of dates, binary values and custom native handlers. Obje
 references follow native `ReferenceDetection`/`$ref` behavior and operation-local
 native resolve tasks. The facade adds no reference representation or ID table.
 
+Direct binding to `JsonValue`, `JsonObject` or `JsonArray`, including nested DTO
+properties and generic elements, requires native `DisableReferenceDetect`.
+Such trees preserve `$ref` as ordinary JSON data. Otherwise the tree reader fails
+instead of copying containers before native deferred reference resolution and
+silently losing fields. To resolve references before copying a neutral tree, use
+`readTree(String)`; shared acyclic children become independent copies and cycles
+fail with `LIMIT`. The native API supplies no post-resolution tree-binding hook;
+the facade adds no second binding pipeline or reference tracker. This restriction
+does not change ordinary DTO/Map/List reference resolution.
+The check runs when the native tree reader is invoked; stream input may already
+have been consumed at that point.
+
 Fastjson2's `JSONReader.of(InputStream, ...)` consumes the complete input before
 binding, and encoding buffers one complete value before writing it. Its
 `JSONStreamReader` and delimiter-consumer APIs support blocking record streams,
@@ -106,6 +118,11 @@ transformations run once per preparation and must return a non-null reader/write
 they cannot replace the stream factory. Attributes are passed through native
 binding contexts and neutral adapter cursors; values must be stable and thread-safe.
 They only have an effect when a registered adapter or native handler consumes them.
+Jackson `ObjectReader.at(...)` filters are rejected during preparation: their
+filtered EOF can hide trailing roots. Validation initializes a native iterator on
+empty input, inspects its public parser and closes it without binding a value.
+Normal reads incur no additional parsing or checks. Use facade Pointer selection
+through `JsonReadOptions` when selecting nested input.
 
 Providers share native caches for lightweight changes. Changing default null
 inclusion uses native copy/rebuild with isolated serializer caches during
@@ -418,13 +435,18 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 309 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 315 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
-module's 80% branch-coverage gate pass. Aggregate branch coverage is 1352/1441
-(93.82%); fastjson2 covers 74/76 branches (97.37%). Tests cover all three Providers, configured
+module's 80% branch-coverage gate pass. Aggregate branch coverage is 1357/1445
+(93.91%); fastjson2 covers 75/76 branches (98.68%). Tests cover all three Providers, configured
 extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
 ownership. The [CI matrix](../.github/workflows/verify.yml) also runs small-chunk,
 closed-owner, tree-retention and pooled-buffer regressions.
+Regressions also cover fastjson2 resolved/literal reference tree boundaries,
+nested DTO/generic tree bindings, Jackson filtered-reader rejection and trailing
+roots across all synchronous inputs. Preparation does not deserialize a probe
+through business handlers. These checks do not change ordinary DTO read/write or
+streaming hot paths; the corresponding performance results below remain applicable.
 Reference regressions cover configurable structural-copy limits, shared acyclic
 children, native object-ID mixins, per-record ID isolation and nested Adapter
 context reuse. Four independent Java 17/21 and Provider runs each consume over
