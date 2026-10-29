@@ -391,7 +391,8 @@ wrap 创建只分配根视图，不遍历数据；子节点按访问包装，转
 再逐步将声明类型改为 JsonObject/JsonArray、静态操作改为 JsonMapper。
 先移除或排除 `com.alibaba:fastjson` 及其他包含这些同名类的依赖，再引入兼容模块；不可同时放入 classpath。
 独立的 `com.alibaba.fastjson2:fastjson2` 引擎使用不同包名，可以作为 Provider 共存。
-这些旧名类均已弃用；支持常用构造、标量 getter、Map/List 操作与解析输出。
+旧名类和专用方法均已弃用；标准 Map/List 与中立 JsonValue 方法不额外标记弃用。
+容器继承 JSON，支持旧式 JSON 变量和 JSONObject.toJSONString(bean) 等继承静态调用。
 
 ```java
 import com.alibaba.fastjson.JSON;
@@ -409,10 +410,37 @@ String json = mapper.write(object);
 默认静态方法和无 mapper 构造器使用 Json.global；多配置应用使用显式 mapper 入口。
 Map/List 构造器共享源存储，嵌套读取按需提供兼容视图；修改方法返回旧值原引用，deepCopy 获取独立副本。
 输出直接复用持有的中立存储，不逐层调用旧名 getter 包装容器；嵌套旧名读取本身仍有视图分配。
-同一存储的重复视图不承诺对象身份。JSONPath、fastjson 注解、Feature、过滤器与旧
-TypeReference 不在兼容范围；泛型使用 JsonType，DTO 属性优先使用中立接口。
+同一存储的重复视图不承诺对象身份；JSON.toJSON(已有旧名容器) 保留原引用。
+clone 只复制外层集合，嵌套仍共享。旧式数组 getter 越界抛异常；node(index) 越界返回 missing。
+parse/parseObject/parseArray 的 null、空白 String 返回 null。
+
+常用输出支持静态/实例 toJSONString、pretty boolean、toJSONBytes、Writer、OutputStream 和实例 Appendable；
+Writer/OutputStream 直接委托 Provider，不创建完整中间字符串，不关闭调用方的流。
+支持 Class、JDK Type 和直接匿名 TypeReference 的泛型入口；新代码统一使用 JsonType。
+
+```java
+String pretty = JSON.toJSONString(legacy, true);
+JSON.writeJSONString(outputStream, legacy); // UTF-8，调用方负责关闭
+java.util.List<Device> rows = JSON.parseObject(text,
+    new com.alibaba.fastjson.TypeReference<java.util.List<Device>>() {});
+// 新代码：mapper.read(text, JsonType.listOf(JsonType.of(Device.class)));
+```
+
+仅四个旧选项有中立映射：PrettyFormat（格式化）、WriteMapNullValue（保留 null）、
+UseBigDecimal（精确小数）、IgnoreNotMatch（忽略 DTO 未知字段）。
+它们映射到 JsonOperationOptions，未指定项继承映射器，具体注解优先级仍由 Provider 决定。
+不同于当前配置的旧选项会按次准备操作映射器；高频固定选项应复用 mapper.withOptions 的结果。
+与当前配置一致的选项直接复用映射器，不增加全局变体缓存。
+其他显式 Feature/SerializerFeature（包括 AutoType/WriteClassName）、旧过滤器、原生配置注册表、
+日期格式重载和全局类型键变更，在转换或 I/O 前抛 UnsupportedOperationException，提示替代入口。
+ParserConfig/SerializeConfig 只保留部分签名，构造和全局获取即报错；过滤器回调不会执行。
+TypeReference 的旧类型参数替换构造器仅保留签名，getType 时明确报错。
+旧入口的绑定或 I/O 失败包装为 JSONException，并保留 JsonException cause；中立 node/as 仍抛 JsonException。
+
+JSONPath、fastjson 注解执行、解析器内部类型和可变全局标志不提供；范围外 API 仍会编译失败。
 任意 DTO 或泛型中声明弃用容器类型不保证跨 Provider 绑定；旧名适配放在 JSON 的根解析入口。
-原包名仅承接已覆盖的常用源码 API，不保证完整 fastjson API、继承关系或第三方已编译代码的二进制兼容。
+原包名仅承接已覆盖的常用源码 API，不保证完整 fastjson API 或第三方已编译代码的二进制兼容。
+null、日期、数值转换和语法遵循配置的 Provider；例如省略 null 应统一设置映射器的 omitNulls。
 
 ### 访问、转换与位置
 
@@ -750,7 +778,7 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 ### 验证与复现
 
-Java 17/21 各 337 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、fastjson2 树引用边界、Jackson 过滤 reader 拒绝、默认类型探测关闭与手动启用警告、JVM 类型配置隔离、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 348 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、fastjson2 树引用边界、Jackson 过滤 reader 拒绝、默认类型探测关闭与手动启用警告、JVM 类型配置隔离、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 

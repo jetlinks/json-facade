@@ -1,7 +1,10 @@
 package com.alibaba.fastjson;
 
+import java.lang.reflect.Type;
 import java.util.AbstractMap;
 import java.util.AbstractSet;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -15,39 +18,59 @@ import org.jetlinks.json.JsonValue;
 import org.jetlinks.json.internal.JsonValues;
 
 /**
- * 旧 JSONObject 的源码迁移容器；修改方法返回旧值原引用，遵循中立集合契约。
- * Map 构造器共享传入存储，嵌套读取按需提供兼容视图；不提供并发同步。
- * 与原 fastjson 同名类互斥，只兼容已提供的常用源码 API。
- * @deprecated 新代码使用 JsonObject 与 JsonMapper；不兼容 fastjson 注解、Feature 或完整二进制 API。
+ * 旧 JSONObject 的源码迁移容器；构造器共享 Map，插入保留引用，修改返回旧值原引用。
+ * 嵌套读取按需提供兼容视图；不提供并发同步，clone 浅复制，deepCopy 递归隔离。
+ * 与原 fastjson 同名类互斥；DTO 内部旧容器、原生注解和完整二进制 API 不在兼容范围。
+ * @deprecated 新代码使用 JsonObject、JsonMapper 和标准 Map 方法。
  * @since 1.0.0
  */
 @Deprecated(since = "1.0", forRemoval = false)
-public class JSONObject extends AbstractMap<String, Object> implements JsonObject, JsonValues.DelegatingValue {
-    private final JsonMapper mapper;
-    private final JsonObject value;
+public class JSONObject extends JSON implements JsonObject, Cloneable {
+    private JsonObject value;
 
-    /** 使用共享默认映射器，适合已在启动阶段注册 Json.global 的应用。 */
+    /** @deprecated 使用默认映射器；新代码使用 JsonMapper.createObject。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONObject() {
         this(Json.global());
     }
 
-    /** 显式提供映射器，避免全局发现并固定当前容器的绑定配置。 */
+    /** @deprecated 固定所属映射器；新代码使用 JsonMapper.createObject。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONObject(JsonMapper mapper) {
         this(mapper, new LinkedHashMap<>());
     }
 
-    /** 保留旧构造器的共享 Map 语义。 */
+    /** @deprecated 共享 Map，隔离请用 deepCopy；新代码使用 JsonObject。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONObject(Map<String, Object> source) {
         this(Json.global(), source);
     }
 
-    /** 使用指定映射器共享 Map；隔离请调用 deepCopy。 */
+    /** @deprecated 共享 Map 存储；新代码使用 JsonObject。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONObject(JsonMapper mapper, Map<String, Object> source) {
-        this.mapper = Objects.requireNonNull(mapper, "mapper");
+        super(mapper);
         value = JsonValues.mutableObject(source, mapper);
     }
 
-    /** 内部绑定入口；直接委托已持有的中立节点，不创建遍历包装或快照。 */
+    /** @deprecated 有序时保持插入顺序；新代码使用 JsonMapper.createObject。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONObject(boolean ordered) {
+        this(16, ordered);
+    }
+
+    /** @deprecated 指定初始容量；新代码使用标准 Map 与 JsonObject。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONObject(int capacity) {
+        this(capacity, false);
+    }
+
+    /** @deprecated 仅控制底层 Map 的容量和顺序，不改变 Provider 输出策略。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONObject(int capacity, boolean ordered) {
+        this(Json.global(), ordered ? new LinkedHashMap<>(capacity) : new HashMap<>(capacity));
+    }
+
     @Override
     public JsonValue delegateValue() {
         return value;
@@ -55,7 +78,7 @@ public class JSONObject extends AbstractMap<String, Object> implements JsonObjec
 
     @Override
     public Object get(Object key) {
-        return JSON.legacy(mapper, value.get(key));
+        return JSON.legacy(mapper(), value.get(key));
     }
 
     @Override
@@ -74,8 +97,13 @@ public class JSONObject extends AbstractMap<String, Object> implements JsonObjec
     }
 
     @Override
-    public int size() {
-        return value.size();
+    public boolean containsValue(Object item) {
+        return value.containsValue(item);
+    }
+
+    @Override
+    public boolean isEmpty() {
+        return value.isEmpty();
     }
 
     @Override
@@ -83,6 +111,40 @@ public class JSONObject extends AbstractMap<String, Object> implements JsonObjec
         value.clear();
     }
 
+    @Override
+    public void putAll(Map<? extends String, ?> source) {
+        value.putAll(source);
+    }
+
+    @Override
+    public Set<String> keySet() {
+        return value.keySet();
+    }
+
+    @Override
+    public Collection<Object> values() {
+        return new AbstractMap<String, Object>() {
+            @Override
+            public Set<Entry<String, Object>> entrySet() {
+                return JSONObject.this.entrySet();
+            }
+        }.values();
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return value.equals(other);
+    }
+
+    @Override
+    public int hashCode() {
+        return value.hashCode();
+    }
+
+    @Override
+    public JSONObject deepCopy() {
+        return new JSONObject(mapper(), value.deepCopy());
+    }
     @Override
     public Set<Entry<String, Object>> entrySet() {
         return new AbstractSet<>() {
@@ -111,7 +173,7 @@ public class JSONObject extends AbstractMap<String, Object> implements JsonObjec
 
                             @Override
                             public Object getValue() {
-                                return JSON.legacy(mapper, entry.getValue());
+                                return JSON.legacy(mapper(), entry.getValue());
                             }
 
                             @Override
@@ -142,155 +204,214 @@ public class JSONObject extends AbstractMap<String, Object> implements JsonObjec
         };
     }
 
-    /** 缺失/null 返回 null；实际类型不符时报错，不隐式解析字符串。 */
+
+    /** @deprecated 缺失/null 返回 null，形状不符失败；使用 JsonValue.getObject。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONObject getJSONObject(String name) {
-        return JSON.object(mapper, get(name));
+        return JSON.object(mapper(), get(name));
     }
 
-    /** 缺失/null 返回 null；实际类型不符时报错。 */
+    /** @deprecated 缺失/null 返回 null；使用 JsonValue.getArray。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONArray getJSONArray(String name) {
-        return JSON.array(mapper, get(name));
+        return JSON.array(mapper(), get(name));
     }
 
-    /** 使用所属 Provider 绑定 DTO。 */
+    /** @deprecated 使用 node(name).as(type)；旧异常包装为 JSONException。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public <T> T getObject(String name, Class<T> type) {
-        return value.node(name).as(type);
+        return member(value.node(name), type);
     }
 
-    /** 使用所属 Provider 绑定当前对象。 */
-    public <T> T toJavaObject(Class<T> type) {
-        return value.as(type);
+    /** @deprecated 使用 node(name).as(JsonType.of(type))。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public <T> T getObject(String name, Type type) {
+        return member(value.node(name), type);
     }
 
-    @Override
-    public JSONObject deepCopy() {
-        return new JSONObject(mapper, value.deepCopy());
+    /** @deprecated 使用 node(name).as(JsonType)。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public <T> T getObject(String name, TypeReference<T> type) {
+        return member(value.node(name), type.getType());
     }
 
-    @Override
-    public boolean isNull() {
-        return false;
+    /** @deprecated 使用标准 Map.put；此方法返回当前对象。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONObject fluentPut(String name, Object item) {
+        put(name, item);
+        return this;
     }
 
-    @Override
-    public boolean isMissing() {
-        return false;
+    /** @deprecated 使用标准 Map.putAll。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONObject fluentPutAll(Map<? extends String, ?> source) {
+        putAll(source);
+        return this;
     }
 
-    @Override
-    public Object toJavaValue() {
-        return value.toJavaValue();
+    /** @deprecated 使用标准 Map.remove。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONObject fluentRemove(Object name) {
+        remove(name);
+        return this;
     }
 
-    @Override
-    public JsonValue node(String name) {
-        return value.node(name);
+    /** @deprecated 使用标准 Map.clear。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONObject fluentClear() {
+        clear();
+        return this;
     }
 
-    @Override
-    public JsonValue node(int index) {
-        return value.node(index);
+    /** @deprecated 仅浅复制外层 Map，嵌套仍共享；隔离请用 deepCopy。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONObject clone() {
+        try {
+            JSONObject copy = (JSONObject) super.clone();
+            copy.value = JsonValues.mutableObject(new LinkedHashMap<>(value), mapper());
+            return copy;
+        } catch (CloneNotSupportedException error) {
+            throw new AssertionError(error);
+        }
     }
 
-    @Override
-    public <T> T as(JsonType<T> type) {
-        return value.as(type);
+    /** @deprecated 返回共享中立 Map 视图，不暴露原生引擎；新代码直接使用 JsonObject。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public Map<String, Object> getInnerMap() {
+        return value;
     }
 
-    /** 使用构造时的映射器输出，遵循其 null、日期及原生绑定配置。 */
-    public String toJSONString() {
-        return mapper.write(this);
-    }
-
-    @Override
-    public String toString() {
-        return toJSONString();
-    }
-
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public String getString(String name) {
-        return value.node(name).asString();
+        return JSON.scalar(value.node(name), JsonValues.STRING);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Integer getInteger(String name) {
-        return value.node(name).asInteger();
+        return JSON.scalar(value.node(name), JsonValues.INTEGER);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Long getLong(String name) {
-        return value.node(name).as(Long.class);
+        return JSON.scalar(value.node(name), JsonType.of(Long.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Double getDouble(String name) {
-        return value.node(name).as(Double.class);
+        return JSON.scalar(value.node(name), JsonType.of(Double.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Float getFloat(String name) {
-        return value.node(name).as(Float.class);
+        return JSON.scalar(value.node(name), JsonType.of(Float.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Short getShort(String name) {
-        return value.node(name).as(Short.class);
+        return JSON.scalar(value.node(name), JsonType.of(Short.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Byte getByte(String name) {
-        return value.node(name).as(Byte.class);
+        return JSON.scalar(value.node(name), JsonType.of(Byte.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Boolean getBoolean(String name) {
-        return value.node(name).as(Boolean.class);
+        return JSON.scalar(value.node(name), JsonType.of(Boolean.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public java.math.BigDecimal getBigDecimal(String name) {
-        return value.node(name).asBigDecimal();
+        return JSON.scalar(value.node(name), JsonValues.BIG_DECIMAL);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public java.math.BigInteger getBigInteger(String name) {
-        return value.node(name).asBigInteger();
+        return JSON.scalar(value.node(name), JsonValues.BIG_INTEGER);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public byte[] getBytes(String name) {
+        return JSON.scalar(value.node(name), JsonType.of(byte[].class));
+    }
+
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public java.util.Date getDate(String name) {
+        return JSON.scalar(value.node(name), JsonType.of(java.util.Date.class));
+    }
+
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public java.sql.Date getSqlDate(String name) {
+        return JSON.scalar(value.node(name), JsonType.of(java.sql.Date.class));
+    }
+
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public java.sql.Timestamp getTimestamp(String name) {
+        return JSON.scalar(value.node(name), JsonType.of(java.sql.Timestamp.class));
+    }
+
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public int getIntValue(String name) {
-        return value.node(name).asInt();
+        JsonValue node = value.node(name);
+        return node.isMissing() || node.isNull() ? 0 : JSON.scalar(node, JsonValues.INT);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public long getLongValue(String name) {
-        return value.node(name).asLong();
+        JsonValue node = value.node(name);
+        return node.isMissing() || node.isNull() ? 0L : JSON.scalar(node, JsonValues.LONG);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public double getDoubleValue(String name) {
-        return value.node(name).asDouble();
+        JsonValue node = value.node(name);
+        return node.isMissing() || node.isNull() ? 0D : JSON.scalar(node, JsonValues.DOUBLE);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public float getFloatValue(String name) {
-        return value.node(name).asFloat();
+        JsonValue node = value.node(name);
+        return node.isMissing() || node.isNull() ? 0F : JSON.scalar(node, JsonValues.FLOAT);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public short getShortValue(String name) {
-        return value.node(name).asShort();
+        JsonValue node = value.node(name);
+        return node.isMissing() || node.isNull() ? (short) 0 : JSON.scalar(node, JsonValues.SHORT);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public byte getByteValue(String name) {
-        return value.node(name).asByte();
+        JsonValue node = value.node(name);
+        return node.isMissing() || node.isNull() ? (byte) 0 : JSON.scalar(node, JsonValues.BYTE);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(name).as；转换由 Provider 决定，缺失/null 返回 null 或基本类型默认值。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public boolean getBooleanValue(String name) {
-        return value.node(name).asBoolean();
+        JsonValue node = value.node(name);
+        return node.isMissing() || node.isNull() ? false : JSON.scalar(node, JsonValues.BOOLEAN);
     }
-
 }
 

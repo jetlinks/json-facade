@@ -1,9 +1,12 @@
 package com.alibaba.fastjson;
 
+import java.lang.reflect.Type;
 import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
-import java.util.Objects;
+import java.util.ListIterator;
 import org.jetlinks.json.Json;
 import org.jetlinks.json.JsonArray;
 import org.jetlinks.json.JsonMapper;
@@ -12,40 +15,47 @@ import org.jetlinks.json.JsonValue;
 import org.jetlinks.json.internal.JsonValues;
 
 /**
- * 旧 JSONArray 的源码迁移容器，保留插入引用；修改方法返回旧值原引用。
- * List 构造器共享存储；嵌套 get、迭代和 stream 返回同一数据上的兼容视图。
- * 不提供并发同步。
- * 与原 fastjson 同名类互斥，只兼容已提供的常用源码 API。
- * @deprecated 新代码使用 JsonArray 与 JsonMapper；不兼容 fastjson Feature 或完整二进制 API。
+ * 旧 JSONArray 的源码迁移容器；构造器共享 List，插入保留引用，修改返回旧值原引用。
+ * 嵌套 get、迭代和 stream 按需提供兼容视图；不提供并发同步。
+ * clone 浅复制，deepCopy 递归隔离；旧 getter 越界失败，node 仍保留缺失语义。
+ * @deprecated 新代码使用 JsonArray、JsonMapper 和标准 List 方法。
  * @since 1.0.0
  */
 @Deprecated(since = "1.0", forRemoval = false)
-public class JSONArray extends AbstractList<Object> implements JsonArray, JsonValues.DelegatingValue {
-    private final JsonMapper mapper;
-    private final JsonArray value;
+public class JSONArray extends JSON implements JsonArray, Cloneable {
+    private JsonArray value;
 
-    /** 使用共享默认映射器。 */
+    /** @deprecated 使用默认映射器；新代码使用 JsonMapper.createArray。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONArray() {
         this(Json.global());
     }
 
-    /** 使用指定映射器创建独立空数组。 */
+    /** @deprecated 固定映射器；新代码使用 JsonMapper.createArray。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONArray(JsonMapper mapper) {
         this(mapper, new ArrayList<>());
     }
 
-    /** 共享旧 List；隔离请用 deepCopy。 */
+    /** @deprecated 共享 List；隔离请用 deepCopy。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONArray(List<Object> source) {
         this(Json.global(), source);
     }
 
-    /** 使用指定映射器共享 List 存储。 */
+    /** @deprecated 共享 List 存储；新代码使用 JsonArray。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public JSONArray(JsonMapper mapper, List<Object> source) {
-        this.mapper = Objects.requireNonNull(mapper, "mapper");
+        super(mapper);
         value = JsonValues.mutableArray(source, mapper);
     }
 
-    /** 内部绑定入口；直接委托已持有的中立节点，不创建遍历包装或快照。 */
+    /** @deprecated 指定初始容量；新代码使用标准 List 与 JsonArray。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray(int capacity) {
+        this(Json.global(), new ArrayList<>(capacity));
+    }
+
     @Override
     public JsonValue delegateValue() {
         return value;
@@ -53,7 +63,7 @@ public class JSONArray extends AbstractList<Object> implements JsonArray, JsonVa
 
     @Override
     public Object get(int index) {
-        return JSON.legacy(mapper, value.get(index));
+        return JSON.legacy(mapper(), value.get(index));
     }
 
     @Override
@@ -64,170 +74,427 @@ public class JSONArray extends AbstractList<Object> implements JsonArray, JsonVa
     @Override
     public void add(int index, Object item) {
         value.add(index, item);
-        modCount++;
+    }
+
+    @Override
+    public boolean add(Object item) {
+        return value.add(item);
     }
 
     @Override
     public Object remove(int index) {
-        Object removed = value.remove(index);
-        modCount++;
-        return removed;
+        return value.remove(index);
     }
 
     @Override
-    public int size() {
-        return value.size();
+    public boolean remove(Object item) {
+        return value.remove(item);
     }
 
-    /** 按索引取得兼容对象；null 返回 null，形状不符时失败。 */
-    public JSONObject getJSONObject(int index) {
-        return JSON.object(mapper, get(index));
+    @Override
+    public boolean contains(Object item) {
+        return value.contains(item);
     }
 
-    /** 按索引取得兼容数组。 */
-    public JSONArray getJSONArray(int index) {
-        return JSON.array(mapper, get(index));
+    @Override
+    public boolean containsAll(Collection<?> items) {
+        return value.containsAll(items);
     }
 
-    /** 使用所属 Provider 绑定元素。 */
-    public <T> T getObject(int index, Class<T> type) {
-        return value.node(index).as(type);
+    @Override
+    public boolean isEmpty() {
+        return value.isEmpty();
     }
 
-    /** 使用所属 Provider 绑定为普通列表。 */
-    public <T> List<T> toJavaList(Class<T> type) {
-        return value.as(JsonType.listOf(JsonType.of(type)));
+    @Override
+    public int indexOf(Object item) {
+        return value.indexOf(item);
+    }
+
+    @Override
+    public int lastIndexOf(Object item) {
+        return value.lastIndexOf(item);
+    }
+
+    @Override
+    public void clear() {
+        value.clear();
+    }
+
+    @Override
+    public boolean addAll(Collection<?> items) {
+        return value.addAll(items);
+    }
+
+    @Override
+    public boolean addAll(int index, Collection<?> items) {
+        return value.addAll(index, items);
+    }
+
+    @Override
+    public boolean removeAll(Collection<?> items) {
+        return value.removeAll(items);
+    }
+
+    @Override
+    public boolean retainAll(Collection<?> items) {
+        return value.retainAll(items);
+    }
+
+    @Override
+    public Object[] toArray() {
+        return listView().toArray();
+    }
+
+    @Override
+    public <T> T[] toArray(T[] target) {
+        return listView().toArray(target);
+    }
+
+    @Override
+    public Iterator<Object> iterator() {
+        return listIterator();
+    }
+
+    @Override
+    public ListIterator<Object> listIterator() {
+        return listIterator(0);
+    }
+
+    @Override
+    public List<Object> subList(int start, int end) {
+        return new JSONArray(mapper(), value.subList(start, end));
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return value.equals(other);
+    }
+
+    @Override
+    public int hashCode() {
+        return value.hashCode();
     }
 
     @Override
     public JSONArray deepCopy() {
-        return new JSONArray(mapper, value.deepCopy());
+        return new JSONArray(mapper(), value.deepCopy());
     }
 
     @Override
-    public boolean isNull() {
-        return false;
+    public ListIterator<Object> listIterator(int index) {
+        ListIterator<Object> source = value.listIterator(index);
+        return new ListIterator<>() {
+            @Override
+            public boolean hasNext() {
+                return source.hasNext();
+            }
+
+            @Override
+            public Object next() {
+                return JSON.legacy(mapper(), source.next());
+            }
+
+            @Override
+            public boolean hasPrevious() {
+                return source.hasPrevious();
+            }
+
+            @Override
+            public Object previous() {
+                return JSON.legacy(mapper(), source.previous());
+            }
+
+            @Override
+            public int nextIndex() {
+                return source.nextIndex();
+            }
+
+            @Override
+            public int previousIndex() {
+                return source.previousIndex();
+            }
+
+            @Override
+            public void remove() {
+                source.remove();
+            }
+
+            @Override
+            public void set(Object item) {
+                source.set(item);
+            }
+
+            @Override
+            public void add(Object item) {
+                source.add(item);
+            }
+        };
     }
 
-    @Override
-    public boolean isMissing() {
-        return false;
+    // 仅为 JDK 的数组导出算法临时建视图；不为每个容器常驻额外对象。
+    private List<Object> listView() {
+        return new AbstractList<>() {
+            @Override
+            public Object get(int index) {
+                return JSONArray.this.get(index);
+            }
+
+            @Override
+            public int size() {
+                return value.size();
+            }
+        };
     }
 
-    @Override
-    public Object toJavaValue() {
-        return value.toJavaValue();
-    }
-
-    @Override
-    public JsonValue node(String name) {
-        return value.node(name);
-    }
-
-    @Override
-    public JsonValue node(int index) {
+    private JsonValue checkedNode(int index) {
+        java.util.Objects.checkIndex(index, value.size());
         return value.node(index);
     }
 
-    @Override
-    public <T> T as(JsonType<T> type) {
-        return value.as(type);
+    /** @deprecated null 返回 null，越界或形状不符失败；使用 JsonValue.getObject。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONObject getJSONObject(int index) {
+        return JSON.object(mapper(), get(index));
     }
 
-    /** 使用构造时的映射器输出，遵循其 null、日期及原生绑定配置。 */
-    public String toJSONString() {
-        return mapper.write(this);
+    /** @deprecated null 返回 null，越界失败；使用 JsonValue.getArray。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray getJSONArray(int index) {
+        return JSON.array(mapper(), get(index));
     }
 
-    @Override
-    public String toString() {
-        return toJSONString();
+    /** @deprecated 使用 node(index).as(type)；旧入口越界失败。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public <T> T getObject(int index, Class<T> type) {
+        return member(checkedNode(index), type);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as(JsonType.of(type))。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public <T> T getObject(int index, Type type) {
+        return member(checkedNode(index), type);
+    }
+
+    /** @deprecated 使用 as(JsonType.listOf(...))；由所属 Provider 绑定普通列表。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public <T> T toJavaList(Class<T> type) {
+        return JSON.convert(mapper(), this, JsonType.listOf(JsonType.of(type)).type());
+    }
+
+    /** @deprecated 使用标准 List.add。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentAdd(Object item) {
+        add(item);
+        return this;
+    }
+
+    /** @deprecated 使用标准 List.add。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentAdd(int index, Object item) {
+        add(index, item);
+        return this;
+    }
+
+    /** @deprecated 使用标准 List.addAll。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentAddAll(Collection<?> items) {
+        addAll(items);
+        return this;
+    }
+
+    /** @deprecated 使用标准 List.addAll。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentAddAll(int index, Collection<?> items) {
+        addAll(index, items);
+        return this;
+    }
+
+    /** @deprecated 使用标准 List.set。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentSet(int index, Object item) {
+        set(index, item);
+        return this;
+    }
+
+    /** @deprecated 使用标准 List.remove。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentRemove(int index) {
+        remove(index);
+        return this;
+    }
+
+    /** @deprecated 使用标准 List.remove。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentRemove(Object item) {
+        remove(item);
+        return this;
+    }
+
+    /** @deprecated 使用标准 List.removeAll。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentRemoveAll(Collection<?> items) {
+        removeAll(items);
+        return this;
+    }
+
+    /** @deprecated 使用标准 List.retainAll。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentRetainAll(Collection<?> items) {
+        retainAll(items);
+        return this;
+    }
+
+    /** @deprecated 使用标准 List.clear。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray fluentClear() {
+        clear();
+        return this;
+    }
+
+    /** @deprecated 浅复制外层 List，嵌套共享；隔离请用 deepCopy。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public JSONArray clone() {
+        try {
+            JSONArray copy = (JSONArray) super.clone();
+            copy.value = JsonValues.mutableArray(new ArrayList<>(value), mapper());
+            return copy;
+        } catch (CloneNotSupportedException error) {
+            throw new AssertionError(error);
+        }
+    }
+
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public String getString(int index) {
-        return value.node(index).asString();
+        return JSON.scalar(checkedNode(index), JsonValues.STRING);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Integer getInteger(int index) {
-        return value.node(index).asInteger();
+        return JSON.scalar(checkedNode(index), JsonValues.INTEGER);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Long getLong(int index) {
-        return value.node(index).as(Long.class);
+        return JSON.scalar(checkedNode(index), JsonType.of(Long.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Double getDouble(int index) {
-        return value.node(index).as(Double.class);
+        return JSON.scalar(checkedNode(index), JsonType.of(Double.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Float getFloat(int index) {
-        return value.node(index).as(Float.class);
+        return JSON.scalar(checkedNode(index), JsonType.of(Float.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Short getShort(int index) {
-        return value.node(index).as(Short.class);
+        return JSON.scalar(checkedNode(index), JsonType.of(Short.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Byte getByte(int index) {
-        return value.node(index).as(Byte.class);
+        return JSON.scalar(checkedNode(index), JsonType.of(Byte.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public Boolean getBoolean(int index) {
-        return value.node(index).as(Boolean.class);
+        return JSON.scalar(checkedNode(index), JsonType.of(Boolean.class));
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public java.math.BigDecimal getBigDecimal(int index) {
-        return value.node(index).asBigDecimal();
+        return JSON.scalar(checkedNode(index), JsonValues.BIG_DECIMAL);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public java.math.BigInteger getBigInteger(int index) {
-        return value.node(index).asBigInteger();
+        return JSON.scalar(checkedNode(index), JsonValues.BIG_INTEGER);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public byte[] getBytes(int index) {
+        return JSON.scalar(checkedNode(index), JsonType.of(byte[].class));
+    }
+
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public java.util.Date getDate(int index) {
+        return JSON.scalar(checkedNode(index), JsonType.of(java.util.Date.class));
+    }
+
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public java.sql.Date getSqlDate(int index) {
+        return JSON.scalar(checkedNode(index), JsonType.of(java.sql.Date.class));
+    }
+
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
+    public java.sql.Timestamp getTimestamp(int index) {
+        return JSON.scalar(checkedNode(index), JsonType.of(java.sql.Timestamp.class));
+    }
+
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public int getIntValue(int index) {
-        return value.node(index).asInt();
+        JsonValue node = checkedNode(index);
+        return node.isNull() ? 0 : JSON.scalar(node, JsonValues.INT);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public long getLongValue(int index) {
-        return value.node(index).asLong();
+        JsonValue node = checkedNode(index);
+        return node.isNull() ? 0L : JSON.scalar(node, JsonValues.LONG);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public double getDoubleValue(int index) {
-        return value.node(index).asDouble();
+        JsonValue node = checkedNode(index);
+        return node.isNull() ? 0D : JSON.scalar(node, JsonValues.DOUBLE);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public float getFloatValue(int index) {
-        return value.node(index).asFloat();
+        JsonValue node = checkedNode(index);
+        return node.isNull() ? 0F : JSON.scalar(node, JsonValues.FLOAT);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public short getShortValue(int index) {
-        return value.node(index).asShort();
+        JsonValue node = checkedNode(index);
+        return node.isNull() ? (short) 0 : JSON.scalar(node, JsonValues.SHORT);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public byte getByteValue(int index) {
-        return value.node(index).asByte();
+        JsonValue node = checkedNode(index);
+        return node.isNull() ? (byte) 0 : JSON.scalar(node, JsonValues.BYTE);
     }
 
-    /** 读取并转换值；缺失/null 的引用结果为 null，基本类型结果为零或 false。 */
+    /** @deprecated 使用 node(index).as；越界失败，null 返回 null 或基本类型默认值，转换由 Provider 决定。 */
+    @Deprecated(since = "1.0", forRemoval = false)
     public boolean getBooleanValue(int index) {
-        return value.node(index).asBoolean();
+        JsonValue node = checkedNode(index);
+        return node.isNull() ? false : JSON.scalar(node, JsonValues.BOOLEAN);
     }
-
 }
 

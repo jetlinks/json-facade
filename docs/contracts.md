@@ -336,10 +336,49 @@ binder, global native registry or JSON string roundtrip is added. Generic DTO/JD
 binding uses JsonType; arbitrary nested declarations of the deprecated classes have
 no cross-provider binding guarantee. Prefer the neutral interfaces for DTO properties.
 
-JSONPath, old TypeReference, Feature/filter registries, fastjson annotations and
-permissive coercion emulation are not supplied. Those call sites must migrate before
-removing the last old fastjson dependency. The default class-name discovery prohibition
-continues to apply. @Deprecated signals migration, not a runtime restriction.
+### Common fastjson source compatibility
+
+The compatibility module keeps the original com.alibaba.fastjson imports. JSON is
+the shared container base, so JSON assignments and inherited static calls such as
+JSONObject.toJSONString(bean) compile. JSONAware and JSONStreamAware are supported.
+All declared legacy APIs and signature types carry method-level @Deprecated with
+migration guidance; standard Map/List and neutral JsonValue methods remain unmarked.
+
+| Area | Supported behavior | Migration target / limits |
+| --- | --- | --- |
+| Parsing | String, UTF-8 byte[] and InputStream; Class, Type, direct TypeReference capture and JsonType targets | JsonMapper.read / JsonType; null/blank String returns null; one complete root is required |
+| Output | Static/inherited/instance toJSONString, pretty boolean, UTF-8 bytes, Writer, OutputStream byte count, instance Appendable | JsonMapper.write/writeBytes; caller owns streams; Writer/OutputStream bind directly without a JSON string roundtrip; other Appendable uses a complete String |
+| Options | PrettyFormat → pretty(true); WriteMapNullValue → omitNulls(false); UseBigDecimal → losslessNumbers(true); IgnoreNotMatch → failUnknownProperties(false) | JsonOperationOptions; explicit options preserve Provider-specific annotation precedence; omitted options inherit the configured mapper |
+| Containers | Capacity/ordered constructors, standard collections, fluent helpers, shallow clone, scalar/date/binary getters, Type/TypeReference member binding, getInnerMap shared neutral view | JsonObject/JsonArray; Provider conversion rules apply; deepCopy is the explicit isolated copy |
+| Root identity and bounds | toJSON(existing JSON) returns the same instance; legacy array getters check List bounds | Neutral node(index) still returns a missing node for invalid indices |
+| Failures | Legacy binding/I/O failures become JSONException preserving the original JsonException cause; unsupported options/APIs throw UnsupportedOperationException | Neutral node/as operations retain JsonException |
+
+The adapter validates the complete explicit feature set or bit mask before mapper
+discovery, operation configuration, binding or I/O. It names an unsupported option
+and its replacement rather than ignoring it. Only the four mappings above execute.
+Class-name discovery features (including SupportAutoType and WriteClassName),
+filter/config-registry entry overloads, date-format entry overloads and global type
+key mutation are explicitly rejected. ParserConfig/SerializeConfig exist only for
+selected signatures; construction/global lookup throws. Filter interfaces are
+signature markers and are never executed. TypeReference(Type...) and uncaptured
+types fail at getType, before binding; no native type-substitution cache is added.
+
+JSONPath, old parser/serializer internals, mutable global flags, mix-in registries,
+fastjson annotation execution and permissive coercion emulation are not supplied.
+APIs outside the common signatures remain compile-time unsupported. This is gradual
+source migration, not the full fastjson binary ABI or an identical default policy.
+For example, old fastjson omits null object values by default, while this module
+inherits the configured JsonMapper policy; set omitNulls on that mapper if needed.
+The class-name discovery prohibition continues to apply. @Deprecated signals
+migration, not a runtime restriction.
+
+Binding remains Provider-owned. Arbitrary DTO properties or generic declarations
+containing deprecated container types have no cross-Provider guarantee; use neutral
+interfaces or JDK Map/List in those declarations. Root legacy containers are adapted
+only at the compatibility entry boundary. No parser, serializer, DTO graph scanner,
+native registry or global mapper-variant cache is added. Ordinary get/put retain
+their direct storage path; iterators and sublists use JDK storage views and only
+wrap nested legacy containers when accessed.
 
 ## Default, named and Spring mappers
 
@@ -494,13 +533,25 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 337 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 348 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
-module's 80% branch-coverage gate pass. Aggregate branch coverage is 1424/1523
-(93.50%); fastjson2 covers 97/98 branches (98.98%). Tests cover all three Providers, configured
+module's 80% branch-coverage gate pass. Aggregate branch coverage is 1553/1653
+(93.95%); compatibility covers 154/156 branches (98.72%) and fastjson2 covers 97/98
+(98.98%). Tests cover all three Providers, configured
 extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
 ownership. The [CI matrix](../.github/workflows/verify.yml) also runs small-chunk,
 closed-owner, tree-retention and pooled-buffer regressions.
+Compatibility regressions cover inherited/static/instance output, legacy interface
+serialization context, generics, collection views, shallow clone, bounds/null
+defaults, deprecation metadata and every unsupported enum option before I/O.
+The same compatibility fixture also runs with each Provider as the global mapper;
+native grammar/conversion differences remain Provider-owned.
+To repeat the alternate-global runs, set JAVA_HOME to the desired JDK and run
+the command below with json.compat.provider set to jackson2, jackson3 or fastjson2:
+
+```sh
+mvn -B -pl json-facade-compat-fastjson -am -Dtest=CompatibilityTest -Dsurefire.failIfNoSpecifiedTests=false -Djson.compat.provider=fastjson2 test
+```
 Regressions also cover fastjson2 resolved/literal reference tree boundaries,
 nested DTO/generic tree bindings, Jackson filtered-reader rejection and trailing
 roots across all synchronous inputs. Preparation does not deserialize a probe
@@ -619,7 +670,7 @@ Collection JMH uses the same Java 21 settings with three Providers and one/1000
 object rows. Ordinary JDK/neutral get, nested get and replacement put measure
 about 1–4 ns/op without per-operation allocation; compatibility scalar get and
 replacement put also allocate nothing. Reading a nested array then its object
-through compatibility getters costs 136 B/op and about 14–16 ns/op. Repeated
+through compatibility getters costs 128 B/op and about 13.6–14.1 ns/op. Repeated
 legacy views are deliberately not cached. `node(...).asInt()` costs about 32–42
 ns/op and 336–592 B/op here because it preserves node diagnostics and configured
 Provider conversion; ordinary get has a different contract.
@@ -631,13 +682,17 @@ Time is mean ± JMH 99.9% error:
 
 | Provider | JDK containers µs/op | Deprecated containers µs/op | JDK / deprecated B/op |
 | --- | ---: | ---: | ---: |
-| Jackson 2 | 122.3 ± 20.3 | 125.3 ± 4.7 | 483516 / 483808 |
-| Jackson 3 | 112.9 ± 3.9 | 114.3 ± 2.7 | 451336 / 451586 |
-| fastjson2 | 121.5 ± 59.2 | 116.8 ± 17.5 | 360331 / 360451 |
+| Jackson 2 | 113.7 ± 1.4 | 115.2 ± 7.2 | 483519 / 483731 |
+| Jackson 3 | 113.1 ± 3.9 | 132.9 ± 21.4 | 451347 / 451516 |
+| fastjson2 | 124.9 ± 77.2 | 140.2 ± 77.5 | 360331 / 360379 |
 
 Transparent storage delegation removes about 264 kB/op of serialization wrappers
 from the earlier compatibility implementation in this fixture; the remaining
-allocation difference is about 120–292 B/op. Timing intervals overlap, especially
+allocation difference is about 48–212 B/op. The latest common-API compatibility
+revision remeasures 15 cases (three engines × get/put/nested/ordinary and legacy
+roundtrips) at 1000 rows. The shared JSON base stores one mapper reference and
+root binding reuses immutable JsonType constants; no per-container helper cache is
+added. Timing intervals overlap, especially
 for fastjson2, so these results do not establish zero overhead or a universal speedup.
 Neutral `readTree` roundtrips allocate about 252 kB/op more than JDK binding for
 1000 rows because tree creation explicitly copies native binding results; use
