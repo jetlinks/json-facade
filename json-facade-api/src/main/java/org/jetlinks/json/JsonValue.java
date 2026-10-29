@@ -7,14 +7,14 @@ import org.jetlinks.json.internal.JsonValues;
  * 统一访问 JSON 对象、数组和标量，适合字段结构不固定的配置或接口结果。
  * <pre>{@code
  * JsonValue value = mapper.readTree("{\"items\":[{\"id\":1}],\"remark\":null}");
- * int id = value.get("items").get(0).get("id").asInt(); // 1
- * boolean explicitNull = value.get("remark").isNull(); // true：存在且值为 null
- * boolean missing = value.get("unknown").isMissing();  // true：字段不存在
+ * int id = value.node("items").node(0).node("id").asInt(); // 1
+ * boolean explicitNull = value.node("remark").isNull(); // true：存在且值为 null
+ * boolean missing = value.node("unknown").isMissing();  // true：字段不存在
  * value.asObject().put("online", true);
  * String json = mapper.write(value);
  * }</pre>
- * 区分显式 {@code NULL} 与路径缺失 {@code MISSING}；找不到字段仍可继续 get，错误位置保留在节点上。
- * <p>结构工厂创建可变容器，借用和缺失视图拒绝写入；所有视图均不提供并发同步。
+ * 区分显式 {@code NULL} 与路径缺失 {@code MISSING}；找不到字段仍可继续 node，错误位置保留在节点上。
+ * <p>对象和数组遵循 Map/List；node 保留节点访问语义。借用视图只读，所有视图均不提供并发同步。
  * {@code toJavaValue()} 和 {@code deepCopy()} 隔离嵌套容器；POJO 绑定须使用所属映射器。
  *
  * @since 1.0.0
@@ -78,12 +78,12 @@ public interface JsonValue {
     /**
      * 读取对象字段；字段不存在或当前值不是对象时返回保留访问路径的缺失视图。
      */
-    JsonValue get(String name);
+    JsonValue node(String name);
 
     /**
      * 读取数组元素；越界或当前值不是数组时返回保留访问路径的缺失视图。
      */
-    JsonValue get(int index);
+    JsonValue node(int index);
 
     /**
      * 返回对象字段数或数组元素数；标量、null 和缺失视图返回 0。
@@ -103,7 +103,7 @@ public interface JsonValue {
      * <pre>{@code
      * record Device(String id) {}
      * JsonValue root = mapper.readTree("{\"device\":{\"id\":\"dev-1\"}}");
-     * Device device = root.get("device").as(Device.class);
+     * Device device = root.node("device").as(Device.class);
      * }</pre>
      */
     default <T> T as(JsonType<T> type) {
@@ -133,7 +133,7 @@ public interface JsonValue {
     }
 
     /**
-     * 返回非 null 对象视图；缺失或 null 可继续链式读取，写入失败且不自动创建数据。
+     * 返回对象视图；缺失或 null 返回 Java null，安全链式访问请用 node。
      * 存在但不是对象时抛出类型错误。
      */
     default JsonObject getObject(String name) {
@@ -141,21 +141,21 @@ public interface JsonValue {
     }
 
     /**
-     * 读取数组中的对象视图；缺失或 null 可链式读取，类型不符时失败。
+     * 读取数组中的对象视图；缺失或 null 返回 Java null，类型不符时失败。
      */
     default JsonObject getObject(int index) {
         return JsonValues.objectView(JsonValues.element(this, index));
     }
 
     /**
-     * 读取字段的数组视图；缺失或 null 可链式读取，类型不符时失败。
+     * 读取字段的数组视图；缺失或 null 返回 Java null，类型不符时失败。
      */
     default JsonArray getArray(String name) {
         return JsonValues.arrayView(JsonValues.member(this, name));
     }
 
     /**
-     * 读取数组中的数组视图；缺失或 null 可链式读取，类型不符时失败。
+     * 读取数组中的数组视图；缺失或 null 返回 Java null，类型不符时失败。
      */
     default JsonArray getArray(int index) {
         return JsonValues.arrayView(JsonValues.element(this, index));
@@ -395,39 +395,12 @@ public interface JsonValue {
                 long index = JsonArrayIndex.parse(segment);
                 // 树索引使用 int；无效或超范围的段保留原始访问路径。
                 current = index >= 0 && index <= Integer.MAX_VALUE
-                        ? current.get((int) index) : current.get(segment);
+                        ? current.node((int) index) : current.node(segment);
             } else {
-                current = current.get(segment);
+                current = current.node(segment);
             }
         }
         return current;
     }
 
-    /**
-     * 向可变对象写入字段并递归复制值，返回自身；借用、缺失或类型不符的视图写入失败。
-     */
-    default JsonObject put(String name, Object value) {
-        return asObject().put(name, value);
-    }
-
-    /**
-     * 从可变对象移除字段并返回自身；字段不存在时无副作用，借用或缺失视图写入失败。
-     */
-    default JsonObject remove(String name) {
-        return asObject().remove(name);
-    }
-
-    /**
-     * 向可变数组追加值的递归副本并返回自身；借用、缺失或类型不符的视图写入失败。
-     */
-    default JsonArray add(Object value) {
-        return asArray().add(value);
-    }
-
-    /**
-     * 替换已有数组元素并递归复制值，返回自身；越界失败，不扩展数组，借用或缺失视图写入失败。
-     */
-    default JsonArray set(int index, Object value) {
-        return asArray().set(index, value);
-    }
 }

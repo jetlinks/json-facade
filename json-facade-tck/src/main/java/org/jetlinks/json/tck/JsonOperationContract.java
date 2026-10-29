@@ -82,14 +82,14 @@ public abstract class JsonOperationContract extends JsonTreeContract {
             String original = base.write(value);
             base.write(map);
             JsonMapper changed = base.withOptions(JsonOperationOptions.builder().omitNulls(!omit).build());
-            assertEquals(omit, !changed.readTree(changed.write(value)).get("missing").isMissing());
+            assertEquals(omit, !changed.readTree(changed.write(value)).node("missing").isMissing());
             assertEquals(original, base.write(value));
-            assertEquals(omit, !changed.readTree(changed.write(map)).get("missing").isMissing());
-            assertEquals(2, changed.readTree(changed.write(map)).get("items").size());
-            assertTrue(changed.readTree(changed.write(map)).get("items").get(0).isNull());
+            assertEquals(omit, !changed.readTree(changed.write(map)).node("missing").isMissing());
+            assertEquals(2, changed.readTree(changed.write(map)).node("items").size());
+            assertTrue(changed.readTree(changed.write(map)).node("items").node(0).isNull());
             JsonMapper restored = changed.withOptions(JsonOperationOptions.builder().omitNulls(omit).build());
             assertEquals(original, restored.write(value));
-            assertEquals(!omit, !restored.toTree(value).get("missing").isMissing());
+            assertEquals(!omit, !restored.toTree(value).node("missing").isMissing());
         }
     }
 
@@ -114,8 +114,8 @@ public abstract class JsonOperationContract extends JsonTreeContract {
         assertEquals(12, operation.toTree(expected).asInt());
         assertEquals(expected, operation.read("12", org.jetlinks.json.JsonValue.class).as(Wrapped.class));
         JsonObject object = operation.read("{\"value\":12}", JsonObject.class);
-        assertEquals(expected, object.get("value").as(Wrapped.class));
-        assertEquals(expected, operation.createObject().put("value", 12).get("value").as(Wrapped.class));
+        assertEquals(expected, object.node("value").as(Wrapped.class));
+        assertEquals(expected, operation.createObject(java.util.Map.of("value", 12)).node("value").as(Wrapped.class));
     }
 
     @Test

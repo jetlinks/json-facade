@@ -34,47 +34,48 @@ class JsonTreeApiTest {
         }
         Map<String, ?> source = deep;
         assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, () -> JsonValue.of(source)).kind());
-        JsonObject object = JsonValue.object().put("keep", 1);
+        JsonObject object = JsonValue.of(Map.of("keep", 1)).asObject();
         assertEquals(JsonException.Kind.LIMIT,
-                assertThrows(JsonException.class, () -> object.put("cycle", cyclic)).kind());
+                assertThrows(JsonException.class, () -> JsonValue.of(cyclic)).kind());
         assertEquals(Map.of("keep", 1), object.toJavaValue());
     }
 
     @Test
     void pointerRangesComposeWithExistingLocationsAndKeepCopiesIndependent() {
-        JsonObject root = JsonValue.object().put("items", List.of(Map.of("0", Map.of("a/b", 7))));
+        JsonObject root = JsonValue.of(Map.of("items", List.of(Map.of("0", Map.of("a/b", 7))))).asObject();
         JsonPointer pointer = JsonPointer.of("/items/0/0/a~1b");
         JsonValue selected = root.at(pointer);
         assertEquals(7, selected.toJavaValue());
         assertEquals(pointer, selected.pointer());
         assertEquals("items[0][\"0\"][\"a/b\"]", selected.displayPath());
-        assertEquals(selected.displayPath(), root.get("items").at(JsonPointer.of("/0/0"))
-                .get("a/b").displayPath());
+        assertEquals(selected.displayPath(), root.node("items").at(JsonPointer.of("/0/0"))
+                .node("a/b").displayPath());
         assertEquals(pointer, root.at(JsonPointer.of("/items/0"))
                 .at(JsonPointer.of("/0/a~1b")).pointer());
         assertSame(root, root.at(JsonPointer.of("")));
         assertThrows(NullPointerException.class, () -> root.at(null));
 
-        JsonValue absent = selected.at(JsonPointer.of("/missing/tail")).get("~");
+        JsonValue absent = selected.at(JsonPointer.of("/missing/tail")).node("~");
         JsonException error = assertThrows(JsonException.class, absent::requirePresent);
         assertEquals("/items/0/0/a~1b/missing/tail/~0", error.pointer().toString());
         assertEquals("items[0][\"0\"][\"a/b\"].missing.tail[\"~\"]", error.displayPath());
 
         JsonValue parent = root.at(JsonPointer.of("/items/0"));
         List<Integer> input = new ArrayList<>(List.of(1));
-        parent.put("copy", Map.of("values", input));
+        parent.asObject().put("copy", new ArrayList<>(input));
         input.add(2);
-        assertEquals(List.of(1), root.at(JsonPointer.of("/items/0/copy/values")).toJavaValue());
+        assertEquals(List.of(1), root.at(JsonPointer.of("/items/0/copy")).toJavaValue());
         JsonObject copy = parent.asObject().deepCopy();
-        copy.getObject("copy").getArray("values").add(3);
-        assertEquals(List.of(1), parent.at(JsonPointer.of("/copy/values")).toJavaValue());
+        copy.getArray("copy").add(3);
+        assertEquals(List.of(1), parent.at(JsonPointer.of("/copy")).toJavaValue());
         assertEquals("", copy.pointer().toString());
         assertEquals("$", copy.displayPath());
     }
 
     @Test
     void pointerTraversalKeepsIndexDiagnosticsAndAbsentKinds() {
-        JsonObject root = JsonValue.object().put("items", List.of(Map.of("0", 7))).put("nil", null);
+        JsonObject root = JsonValue.of(Map.of("items", List.of(Map.of("0", 7)))).asObject();
+        root.put("nil", null);
         for (String index : List.of("0", "1", "2147483647", "01", "-1", "-", "2147483648",
                 "9223372036854775808", "")) {
             JsonValue selected = root.at(new JsonPointer(List.of("items", index, "tail")));
@@ -86,12 +87,15 @@ class JsonTreeApiTest {
             assertEquals(display, selected.displayPath());
         }
         for (String name : List.of("nil", "missing")) {
-            JsonValue selected = root.getArray(name).at(JsonPointer.of("/0/tail"));
+            JsonValue selected = root.node(name).node(0).node("tail");
             assertTrue(selected.isMissing());
             assertEquals(name + "[0].tail", selected.displayPath());
             assertEquals("/" + name + "/0/tail", selected.pointer().toString());
         }
-        JsonValue nullable = JsonValue.object().put("a", JsonValue.object().put("nil", null));
+        JsonObject nullable = JsonValue.object();
+        JsonObject child = JsonValue.object();
+        child.put("nil", null);
+        nullable.put("a", child);
         assertTrue(nullable.at(JsonPointer.of("/a/nil")).isNull());
         assertTrue(nullable.at(JsonPointer.of("/a/nil/tail")).isMissing());
         assertTrue(JsonValue.NULL.at(JsonPointer.of("/a/b")).isMissing());
@@ -112,14 +116,12 @@ class JsonTreeApiTest {
                 new BigDecimal("7") { private static final long serialVersionUID = 1L; })) {
             assertThrows(IllegalArgumentException.class, () -> JsonValue.of(mutable));
             assertThrows(IllegalArgumentException.class, () -> JsonValue.of(Map.of("n", List.of(mutable))));
-            JsonObject object = JsonValue.object().put("n", 1);
-            assertThrows(IllegalArgumentException.class, () -> object.put("n", mutable));
-            assertEquals(1, object.get("n").toJavaValue());
-            assertThrows(IllegalArgumentException.class, () -> tree.add(mutable));
-            assertThrows(IllegalArgumentException.class, () -> tree.set(0, mutable));
-            assertEquals(immutable, tree.toJavaValue());
+            JsonObject object = JsonValue.of(Map.of("n", 1)).asObject();
+            object.put("n", mutable);
+            assertSame(mutable, object.get("n"));
+            assertThrows(IllegalArgumentException.class, object::deepCopy);
             JsonValue external = new ForeignValue(mutable, false, JsonPointer.of(""), "$");
-            assertThrows(IllegalArgumentException.class, () -> object.put("n", external));
+            assertThrows(IllegalArgumentException.class, () -> JsonValue.of(List.of(external)));
         }
     }
 
@@ -128,59 +130,45 @@ class JsonTreeApiTest {
         for (boolean missing : List.of(true, false)) {
             JsonValue foreign = new ForeignValue(null, missing,
                     JsonPointer.of("/external/0/a~1b"), "external[\"0\"][\"a/b\"]");
-            JsonArray array = foreign.getArray("items");
-            assertTrue(array.isMissing());
-            assertEquals("/external/0/a~1b/items", array.pointer().toString());
-            JsonValue child = array.get(0).getObject("~").get("");
+            assertNull(foreign.getArray("items"));
+            assertNull(org.jetlinks.json.internal.JsonValues.arrayView(foreign));
+            JsonValue child = foreign.node("items").node(0).node("~").node("");
             JsonException failure = assertThrows(JsonException.class, child::requireNonNull);
             assertEquals("/external/0/a~1b/items/0/~0/", failure.pointer().toString());
-            assertEquals("external[\"0\"][\"a/b\"].items[0][\"~\"][\"\"]", failure.displayPath());
-            assertEquals("", array.deepCopy().pointer().toString());
-            assertEquals("$", array.deepCopy().displayPath());
-            JsonArray view = org.jetlinks.json.internal.JsonValues.arrayView(foreign);
-            assertEquals(missing, view.isMissing());
-            assertEquals(!missing, view.isNull());
-            assertEquals(foreign.pointer(), view.pointer());
-            assertEquals(foreign.displayPath(), view.displayPath());
-            JsonValue selected = view.at(JsonPointer.of("/0/tail"));
-            assertEquals("/external/0/a~1b/0/tail", selected.pointer().toString());
-            assertEquals("external[\"0\"][\"a/b\"][0].tail", selected.displayPath());
-            assertEquals(foreign.pointer(), assertThrows(JsonException.class, () -> view.add(1)).pointer());
-            assertEquals("", view.deepCopy().pointer().toString());
+            assertEquals("", child.deepCopy().pointer().toString());
         }
         JsonValue root = new ForeignValue(null, true, JsonPointer.of(""), "$");
-        assertEquals("items[0]", root.getArray("items").get(0).displayPath());
-        JsonObject view = org.jetlinks.json.internal.JsonValues.objectView(root);
-        assertFalse(view.isNull());
-        assertEquals("$", view.displayPath());
+        assertEquals("items[0]", root.node("items").node(0).displayPath());
+        assertNull(org.jetlinks.json.internal.JsonValues.objectView(root));
     }
 
     @Test
     void foreignExportedContainersAreCopiedOnInsertion() {
         List<Object> source = new ArrayList<>(List.of(1));
         JsonValue foreign = new ForeignValue(Map.of("items", source), false, JsonPointer.of(""), "$");
-        JsonObject tree = JsonValue.object().put("value", foreign);
+        JsonObject tree = JsonValue.of(Map.of("value", foreign)).asObject();
         source.add(2);
-        assertEquals(List.of(1), tree.get("value").get("items").toJavaValue());
+        assertEquals(List.of(1), tree.node("value").node("items").toJavaValue());
     }
 
     @Test
     void staticTreesNavigateWithoutDiscoveringProvidersAndRequireExplicitBindingForPresentValues() {
-        JsonValue root = JsonValue.object().put("n", 1).put("null", null);
+        JsonObject root = JsonValue.of(Map.of("n", 1)).asObject();
+        root.put("null", null);
         assertEquals(JsonException.Kind.CONFIGURATION,
-                assertThrows(JsonException.class, () -> root.get("n").asInteger()).kind());
-        assertNull(root.get("absent").getArray("items").get(0).asInteger());
-        assertNull(root.get("null").asInteger());
+                assertThrows(JsonException.class, () -> root.node("n").asInteger()).kind());
+        assertNull(root.node("absent").node("items").node(0).asInteger());
+        assertNull(root.node("null").asInteger());
         assertEquals(0, JsonValue.NULL.asInt());
-        assertThrows(NullPointerException.class, () -> root.get("absent").as((JsonType<Object>) null));
+        assertThrows(NullPointerException.class, () -> root.node("absent").as((JsonType<Object>) null));
         assertEquals("$", JsonValue.NULL.displayPath());
         assertEquals("", JsonValue.NULL.pointer().toString());
         assertEquals("/a~1b/~0/", new JsonPointer(List.of("a/b", "~", "")).toString());
-        assertEquals("[\"$\"]", root.get("$").displayPath());
-        assertEquals("[\"1\"]", root.get("1").displayPath());
-        assertEquals("[\"a-b\"]", root.get("a-b").displayPath());
-        assertEquals("node", root.get("node").displayPath());
-        assertTrue(root.get("n").get("child").isMissing());
+        assertEquals("[\"$\"]", root.node("$").displayPath());
+        assertEquals("[\"1\"]", root.node("1").displayPath());
+        assertEquals("[\"a-b\"]", root.node("a-b").displayPath());
+        assertEquals("node", root.node("node").displayPath());
+        assertTrue(root.node("n").node("child").isMissing());
     }
 
     @Test
@@ -232,12 +220,12 @@ class JsonTreeApiTest {
         }
 
         @Override
-        public JsonValue get(String name) {
+        public JsonValue node(String name) {
             return child(name, displayPath.equals("$") ? name : displayPath + "." + name);
         }
 
         @Override
-        public JsonValue get(int index) {
+        public JsonValue node(int index) {
             return child(Integer.toString(index), displayPath + "[" + index + "]");
         }
 

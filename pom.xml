@@ -13,6 +13,7 @@
         <module>json-facade-jackson2</module>
         <module>json-facade-jackson3</module>
         <module>json-facade-fastjson2</module>
+        <module>json-facade-compat-fastjson</module>
         <module>json-facade-reactor</module>
         <module>json-facade-netty</module>
         <module>json-facade-spring</module>

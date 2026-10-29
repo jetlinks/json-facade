@@ -31,8 +31,8 @@ class SpringConfigurationTest {
                 JsonMapper facade = context.getBean(JsonMapper.class);
                 assertEquals("{\"display_name\":\"n\"}", facade.write(new Name("n")));
                 assertEquals(1024, facade.options().maxValueBytes());
-                assertEquals(12, facade.readTree("{\"n\":\"12\"}").get("n").asInteger());
-                assertEquals(9, facade.createObject().get("missing").getArray("items").get(0).asInt(9));
+                assertEquals(12, facade.readTree("{\"n\":\"12\"}").node("n").asInteger());
+                assertEquals(9, facade.createObject().node("missing").node("items").node(0).asInt(9));
                 assertSame(facade, context.getBean(JsonMapper.class));
             }
         }

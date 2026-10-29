@@ -1,19 +1,16 @@
 package org.jetlinks.json;
 
+import java.util.List;
+
 /**
- * JSON 数组视图，支持显式 null；工厂创建的数组在插入时递归复制容器。
- * {@link JsonMapper#wrap(java.util.List)} 返回只读借用视图；{@code deepCopy()} 可复制真实数组为独立可变存储。
- * 视图不提供同步，仅保留访问路径，不持有祖先数据。
+ * JSON 数组；get 返回原始值且越界失败，支持 List 的遍历、stream 和插入删除。
+ * node 提供缺失/null 区分和路径诊断；wrap 创建嵌套只读借用，deepCopy 返回独立可变树。
+ * 不提供并发同步；序列化使用所属 JsonMapper。
  *
  * @since 1.0.0
+ * @see JsonMapper
  */
-public interface JsonArray extends JsonValue {
-    @Override
-    JsonArray add(Object value);
-
-    @Override
-    JsonArray set(int index, Object value);
-
+public interface JsonArray extends JsonValue, List<Object> {
     @Override
     JsonArray deepCopy();
 }

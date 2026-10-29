@@ -57,7 +57,7 @@ public class TreeAccessBenchmark {
     public JsonValue chainView() {
         JsonValue value = tree;
         for (String segment : pointer.segments()) {
-            value = value instanceof JsonArray ? value.get(0) : value.get(segment);
+            value = value instanceof JsonArray ? value.node(0) : value.node(segment);
         }
         return value;
     }
@@ -79,16 +79,16 @@ public class TreeAccessBenchmark {
 
     @Benchmark
     public void pointerWrite() {
-        tree.at(parentPointer).put("v", scalar);
+        tree.at(parentPointer).asObject().put("v", scalar);
     }
 
     @Benchmark
     public void cachedWrite() {
-        parent.put("v", scalar);
+        parent.asObject().put("v", scalar);
     }
 
     @Benchmark
     public void containerWrite() {
-        tree.at(parentPointer).put("payload", payload);
+        tree.at(parentPointer).asObject().put("payload", payload);
     }
 }

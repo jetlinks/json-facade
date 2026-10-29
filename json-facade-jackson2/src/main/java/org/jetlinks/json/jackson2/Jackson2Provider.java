@@ -225,7 +225,7 @@ public final class Jackson2Provider implements JsonProvider {
         module.addDeserializer(JsonObject.class, new JsonDeserializer<>() {
             @Override
             public JsonObject getNullValue(DeserializationContext context) {
-                return JsonValues.objectView(JsonValues.of(null, treeMapper(context)));
+                return null;
             }
 
             @Override
@@ -236,7 +236,7 @@ public final class Jackson2Provider implements JsonProvider {
         module.addDeserializer(JsonArray.class, new JsonDeserializer<>() {
             @Override
             public JsonArray getNullValue(DeserializationContext context) {
-                return JsonValues.arrayView(JsonValues.of(null, treeMapper(context)));
+                return null;
             }
 
             @Override

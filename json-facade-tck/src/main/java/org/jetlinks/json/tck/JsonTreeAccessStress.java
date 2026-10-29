@@ -8,7 +8,6 @@ import org.jetlinks.json.JsonException;
 import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonPointer;
 import org.jetlinks.json.JsonValue;
-import org.jetlinks.json.internal.JsonValues;
 
 /** Standalone bounded-heap proof that retained child/missing views and validation errors do not
  * retain former ancestor storage. Run with -Xmx64m and either real Provider on the classpath.
@@ -29,9 +28,9 @@ public final class JsonTreeAccessStress {
                     "parent", Map.of("leaf", "12"));
             JsonValue root = borrowed ? mapper.wrap(source) : mapper.createObject(source);
             leaves.add(root.getObject("parent"));
-            JsonValue absent = root.get("parent").get("missing").getArray("items").get(0);
+            JsonValue absent = root.node("parent").node("missing").node("items").node(0);
             missing.add(absent);
-            foreign.add(JsonValues.arrayView(new ForeignAbsent(root)).get(0));
+            foreign.add(new ForeignAbsent(root).node(0));
             try {
                 absent.requireNonNull();
                 throw new IllegalStateException("Missing requirement did not fail");
@@ -40,7 +39,7 @@ public final class JsonTreeAccessStress {
             }
         }
         for (int i = 0; i < leaves.size(); i++) {
-            if (leaves.get(i).get("leaf").asInt() != 12 || !missing.get(i).isMissing()
+            if (leaves.get(i).node("leaf").asInt() != 12 || !missing.get(i).isMissing()
                     || !foreign.get(i).pointer().toString().equals("/external/items/0")
                     || !foreign.get(i).displayPath().equals("external.items[0]")
                     || !failures.get(i).pointer().toString().equals("/parent/missing/items/0")) {
@@ -81,13 +80,13 @@ public final class JsonTreeAccessStress {
         }
 
         @Override
-        public JsonValue get(String name) {
-            return owner.get("external").get("items").get(name);
+        public JsonValue node(String name) {
+            return owner.node("external").node("items").node(name);
         }
 
         @Override
-        public JsonValue get(int index) {
-            return owner.get("external").get("items").get(index);
+        public JsonValue node(int index) {
+            return owner.node("external").node("items").node(index);
         }
 
         @Override

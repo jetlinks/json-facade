@@ -152,11 +152,11 @@ class Fastjson2ProviderTest {
         assertEquals("L:a", json.convert(new Label("a"), String.class));
         assertEquals(new Label("a"), json.convert("L:a", Label.class));
         JsonObject tree = json.toTree(Map.of("label", new Label("a"))).asObject();
-        assertEquals("L:a", tree.get("label").asString());
+        assertEquals("L:a", tree.node("label").asString());
         JsonMapper operation = json.withOptions(JsonOperationOptions.builder().omitNulls(true).build());
         int prepared = callbacks.get();
         for (int i = 0; i < 5; i++) {
-            assertEquals("L:a", operation.toTree(Map.of("label", new Label("a"))).get("label").asString());
+            assertEquals("L:a", operation.toTree(Map.of("label", new Label("a"))).node("label").asString());
             assertEquals(new Label("a"), operation.read("\"L:a\"", Label.class));
         }
         assertEquals(prepared, callbacks.get());
@@ -171,23 +171,23 @@ class Fastjson2ProviderTest {
         JsonArray array = operation.read("[1,null]", JsonArray.class);
         assertEquals("{\"x\":1}", operation.write(object));
         assertEquals(Map.of("x", 1), object.as(Map.class));
-        assertEquals(1, array.get(0).asInt());
+        assertEquals(1, array.node(0).asInt());
         assertSame(JsonValue.NULL, operation.read("null", JsonValue.class));
-        assertTrue(operation.read("null", JsonObject.class).isNull());
-        assertTrue(operation.read("null", JsonArray.class).isNull());
+        assertNull(operation.read("null", JsonObject.class));
+        assertNull(operation.read("null", JsonArray.class));
         assertThrows(JsonException.class, () -> operation.read("[]", JsonObject.class));
         TreeHolder holder = operation.read("{\"object\":{\"x\":null},\"array\":[1]}", TreeHolder.class);
         assertEquals(Map.of(), holder.object().as(Map.class));
         assertEquals(Map.of("object", Map.of(), "array", List.of(1)), operation.read(operation.write(holder), Map.class));
-        assertEquals(1, operation.convert(holder, TreeHolder.class).array().get(0).asInt());
+        assertEquals(1, operation.convert(holder, TreeHolder.class).array().node(0).asInt());
         Map<String, Object> source = new LinkedHashMap<>();
         source.put("rows", new ArrayList<>(List.of(1, 2)));
         JsonObject copied = operation.createObject(source);
         ((List<?>) source.get("rows")).clear();
-        assertEquals(2, copied.get("rows").size());
+        assertEquals(2, copied.getArray("rows").size());
         JsonObject borrowed = operation.wrap(source);
         source.put("later", 3);
-        assertEquals(3, borrowed.get("later").asInt());
+        assertEquals(3, borrowed.node("later").asInt());
         assertThrows(UnsupportedOperationException.class, () -> borrowed.put("x", 1));
         assertEquals(List.of(1), base.readTree("[1]").as(List.class));
     }
@@ -206,12 +206,12 @@ class Fastjson2ProviderTest {
         Map<?, ?> resolved = json.read(input, Map.class);
         assertSame(resolved.get("a"), resolved.get("b"));
         JsonValue tree = json.readTree(input);
-        assertEquals(1, tree.get("a").get("n").asInt());
-        assertEquals(1, tree.get("b").get("n").asInt());
-        tree.get("a").asObject().put("n", 2);
-        assertEquals(1, tree.get("b").get("n").asInt());
+        assertEquals(1, tree.node("a").node("n").asInt());
+        assertEquals(1, tree.node("b").node("n").asInt());
+        tree.node("a").asObject().put("n", 2);
+        assertEquals(1, tree.node("b").node("n").asInt());
         String array = "[{\"n\":1},{\"$ref\":\"$[0]\"}]";
-        assertEquals(1, json.readTree(array).get(1).get("n").asInt());
+        assertEquals(1, json.readTree(array).node(1).node("n").asInt());
         String cycle = "{\"a\":{\"$ref\":\"$\"}}";
         assertEquals(JsonException.Kind.LIMIT, assertThrows(JsonException.class, () -> json.readTree(cycle)).kind());
         configuration(() -> json.read(input, JsonValue.class));
@@ -229,18 +229,18 @@ class Fastjson2ProviderTest {
         JsonMapper literal = literalTrees(base);
         String object = "{\"a\":{\"n\":1},\"b\":{\"$ref\":\"$.a\"}}";
         JsonValue tree = literal.read(object, JsonValue.class);
-        assertEquals("$.a", tree.get("b").get("$ref").asString());
-        assertEquals(1, tree.get("a").get("n").asInt());
-        assertEquals("$.a", literal.read(object, JsonObject.class).get("b").get("$ref").asString());
+        assertEquals("$.a", tree.node("b").node("$ref").asString());
+        assertEquals(1, tree.node("a").node("n").asInt());
+        assertEquals("$.a", literal.read(object, JsonObject.class).node("b").node("$ref").asString());
         String array = "[{\"n\":1},{\"$ref\":\"$[0]\"}]";
-        assertEquals("$[0]", literal.read(array, JsonArray.class).get(1).get("$ref").asString());
+        assertEquals("$[0]", literal.read(array, JsonArray.class).node(1).node("$ref").asString());
         String nested = "{\"tree\":{\"a\":{\"n\":1},\"b\":{\"$ref\":\"$.tree.a\"}}}";
-        assertEquals("$.tree.a", literal.read(nested, TreeValueHolder.class).tree().get("b").get("$ref").asString());
+        assertEquals("$.tree.a", literal.read(nested, TreeValueHolder.class).tree().node("b").node("$ref").asString());
         assertEquals("$[0]", literal.read(array, JsonType.listOf(JsonType.of(JsonValue.class)))
-                .get(1).get("$ref").asString());
-        assertEquals("$", literal.read("{\"a\":{\"$ref\":\"$\"}}", JsonValue.class).get("a").get("$ref").asString());
+                .get(1).node("$ref").asString());
+        assertEquals("$", literal.read("{\"a\":{\"$ref\":\"$\"}}", JsonValue.class).node("a").node("$ref").asString());
         assertEquals(object, literal.write(tree));
-        assertEquals(1, base.readTree(object).get("b").get("n").asInt());
+        assertEquals(1, base.readTree(object).node("b").node("n").asInt());
         configuration(() -> base.read(object, JsonValue.class));
         JsonMapper restored = literal.withOptions(JsonOperationOptions.builder()
                 .nativeReader(JSONReader.Context.class, context -> {
@@ -248,7 +248,7 @@ class Fastjson2ProviderTest {
                     return context;
                 }).build());
         configuration(() -> restored.read(object, JsonValue.class));
-        assertEquals("$.a", literal.read(object, JsonValue.class).get("b").get("$ref").asString());
+        assertEquals("$.a", literal.read(object, JsonValue.class).node("b").node("$ref").asString());
     }
 
     private static JsonMapper literalTrees(JsonMapper mapper) {
@@ -495,6 +495,46 @@ class Fastjson2ProviderTest {
     public record Item(int value) { }
     public record Label(String value) { }
     public record TreeHolder(JsonObject object, JsonArray array) { }
+
+    @Test
+    void collectionTreesBindThroughFieldsSettersAndConstructorParameters() {
+        for (boolean fields : List.of(false, true)) {
+            JsonMapper json = literalTrees(mapper()).withOptions(JsonOperationOptions.builder()
+                    .nativeReader(JSONReader.Context.class, context -> {
+                        context.config(JSONReader.Feature.FieldBased, fields);
+                        return context;
+                    }).build());
+            String input = "{\"object\":{\"n\":1},\"array\":[2],\"objects\":[{\"n\":3}]}";
+            CollectionFields holder = json.read(input, CollectionFields.class);
+            assertEquals(1, holder.object.node("n").asInt());
+            assertEquals(2, holder.array.node(0).asInt());
+            assertEquals(3, holder.objects.get(0).node("n").asInt());
+            assertEquals(1, json.read("{\"object\":{\"n\":1},\"array\":[2]}", TreeHolder.class)
+                    .object().node("n").asInt());
+            assertEquals(1, json.read("{\"object\":{\"n\":1}}", CollectionSetter.class)
+                    .getObject().node("n").asInt());
+            assertEquals(1, json.read("{\"n\":1}", JsonObject.class).node("n").asInt());
+            assertNull(json.read("null", JsonArray.class));
+        }
+    }
+
+    public static class CollectionFields {
+        public JsonObject object;
+        public JsonArray array;
+        public List<JsonObject> objects;
+    }
+
+    public static class CollectionSetter {
+        private JsonObject object;
+
+        public JsonObject getObject() {
+            return object;
+        }
+
+        public void setObject(JsonObject object) {
+            this.object = object;
+        }
+    }
     public record TreeValueHolder(JsonValue tree) { }
     public record NativeName(@JSONField(name = "native_value") int value) { }
     public static class Node {

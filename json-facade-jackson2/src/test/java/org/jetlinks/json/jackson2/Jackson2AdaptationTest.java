@@ -109,10 +109,10 @@ class Jackson2AdaptationTest {
         var facade = Jackson2Provider.adapt(new ObjectMapper());
         Tree value = new Tree(facade.createObject(Map.of("a", 1)), facade.createArray(List.of(2, 3)));
         Tree result = facade.read(facade.write(value), Tree.class);
-        assertEquals(1, result.object().get("a").toJavaValue());
-        assertEquals(2, result.array().get(0).toJavaValue());
-        assertEquals(1, result.object().get("a").asInteger());
-        assertEquals(2, result.array().get(0).asInt());
+        assertEquals(1, result.object().node("a").toJavaValue());
+        assertEquals(2, result.array().node(0).toJavaValue());
+        assertEquals(1, result.object().node("a").asInteger());
+        assertEquals(2, result.array().node(0).asInt());
         assertSame(JsonValue.NULL, facade.read("null", JsonValue.class));
     }
 
@@ -136,8 +136,8 @@ class Jackson2AdaptationTest {
         source.registerModule(module);
         var facade = Jackson2Provider.adapt(source);
         assertEquals(42, facade.readTree("12").as(ContextNumber.class).value());
-        assertThrows(JsonException.class, () -> facade.readTree("{\"n\":\"12\"}").get("n").asInteger());
-        assertEquals(12, facade.read("{\"a\":12}", JsonObject.class).get("a").asInt());
+        assertThrows(JsonException.class, () -> facade.readTree("{\"n\":\"12\"}").node("n").asInteger());
+        assertEquals(12, facade.read("{\"a\":12}", JsonObject.class).node("a").asInt());
         assertEquals(30, source.getDeserializationConfig().getAttributes().getAttribute("offset"));
         org.junit.jupiter.api.Assertions.assertNull(source.getDeserializationConfig().getAttributes()
                 .getAttribute(org.jetlinks.json.internal.JsonTreeBinding.class));

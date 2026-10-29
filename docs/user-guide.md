@@ -105,7 +105,7 @@ import org.jetlinks.json.fastjson2.Fastjson2Provider;
 JsonMapper mapper = Json.builder().provider("fastjson2")
     .options(Fastjson2Provider.nativeOptions())
     .build();
-int first = mapper.readTree("[1]").asArray().get(0).asInt();
+int first = mapper.readTree("[1]").asArray().node(0).asInt();
 JsonMapper export = mapper.withOptions(JsonOperationOptions.builder()
     .omitNulls(true).pretty(true).build());
 ```
@@ -141,7 +141,7 @@ JsonMapper literalTrees = mapper.withOptions(JsonOperationOptions.builder()
         return context;
     }).build());
 JsonValue value = literalTrees.read("{\"link\":{\"$ref\":\"$.item\"}}", JsonValue.class);
-String reference = value.get("link").get("$ref").asString(); // "$.item"，保留为普通字段
+String reference = value.node("link").node("$ref").asString(); // "$.item"，保留为普通字段
 ```
 
 该变体的所有读取都会把 `$ref` 当作普通字段。原映射器的普通 DTO/Map/List 仍沿用原生引用解析。
@@ -350,20 +350,22 @@ Jackson 3 直接使用配置化原生 byte[] 输入/输出；String 输出从 UT
 
 ```java
 JsonObject root = mapper.createObject(java.util.Map.of("version", 1));
-root.put("items", java.util.List.of(java.util.Map.of("id", "device-1", "count", 3)));
+root.put("items", mapper.createArray(java.util.List.of(java.util.Map.of("id", "device-1", "count", 3))));
 root.put("note", null);
 root.getArray("items").add(java.util.Map.of("id", "device-2", "count", 4));
 
 JsonPointer idPath = JsonPointer.of("/items/0/id");
 String id = root.at(idPath).asString();
-boolean explicitNull = root.get("note").isNull();
-boolean absent = root.get("unknown").isMissing();
-int fallback = root.get("unknown").getArray("items").get(0).asInt(10);
+boolean explicitNull = root.node("note").isNull();
+boolean absent = root.node("unknown").isMissing();
+int fallback = root.node("unknown").node("items").node(0).asInt(10);
 JsonObject independent = root.deepCopy();
 Object snapshot = root.toJavaValue();
 ```
 
-createObject/createArray、put/add/set 和导出/复制会隔离嵌套容器；插入原容器后再修改原容器，不影响目的树。输入须无环且对象键为 String。JsonValue.of(existingNode) 保留节点身份，隔离请用 deepCopy。
+JsonObject 实现 Map<String,Object>，JsonArray 实现 List<Object>。普通 get 返回原始值，数组越界抛异常；put/remove/set 返回旧值，add 返回 boolean，支持迭代、stream、插入删除和集合视图。put/add/set 保留传入引用，不递归复制；插入后修改子容器会影响最终输出。createObject/createArray 的初始化、deepCopy 和 toJavaValue 才复制嵌套容器。复制输入须无环且对象键为 String；POJO 绑定交给 Provider。JsonValue.of(existingNode) 保留节点身份。
+
+引用写入也保留子容器原有的可变性；要继续编辑 List.of/Map.of 数据，先通过 createArray/createObject 复制。
 
 已有 Map/List 只需读取时，可借用原容器，省去递归复制：
 
@@ -376,16 +378,41 @@ JsonArray listView = mapper.wrap(java.util.List.of(1, 2, 3));
 JsonObject editable = view.deepCopy();
 ```
 
-wrap 创建只分配根视图，不遍历数据；子节点按访问包装，转换与序列化复用所属 Provider。根及嵌套容器的 put/remove/add/set 均抛 UnsupportedOperationException；缺失/null 的写入仍按原有缺失/null 契约失败。外部修改源可被观察；借用不是冻结或并发快照，访问、绑定及复制期间须保持整个源稳定。已取得的子视图仍指向原子容器，祖先替换后须重新定位。
+wrap 创建只分配根视图，不遍历数据；子节点按访问包装，转换与序列化复用所属 Provider。根及嵌套容器的 put/remove/add/set 均抛 UnsupportedOperationException；entrySet、values、迭代器和 subList 也无法修改源或暴露可写嵌套容器。外部修改源可被观察；借用不是冻结或并发快照，访问、绑定及复制期间须保持整个源稳定。已取得的子视图仍指向原子容器，祖先替换后须重新定位。
 
 借用源须为无环的 String 键 Map、List、null、String、Boolean 或下文列出的精确 JDK 数字。wrap 不扫描校验整图；访问到不支持的叶值时失败。嵌套 Collection（非 List）、Java 数组、JsonValue 和 POJO 请先用 createXX/toTree 转换。toJavaValue 仍递归导出独立快照，deepCopy 返回保留 mapper 配置的独立可变树；需要对外隔离时显式选择它们。
 
 结构工厂接受 JSON 标量、Map、Collection 与 Java 数组，不绑定任意 POJO；使用 mapper.toTree(bean) 应用命名、日期和适配器。结构 byte[] 是数字数组，原生绑定通常为 Base64。结构数字只接受精确的 JDK Byte/Short/Integer/Long/Float/Double/BigInteger/BigDecimal，拒绝可变 Number、自定义 Number 和大数子类；这些对象可通过 toTree 绑定。
 
+### 逐步迁移 fastjson 调用
+
+可选依赖 `org.jetlinks:json-facade-compat-fastjson`，运行时仅依赖中立 API。
+将 import 改为 `org.jetlinks.json.compat.fastjson.JSON/JSONObject/JSONArray`，
+再逐步将声明类型改为 JsonObject/JsonArray、静态操作改为 JsonMapper。
+这些旧名类均已弃用；支持常用构造、标量 getter、Map/List 操作与解析输出。
+
+```java
+// 迁移期旧名容器可直接传给中立接口；不依赖 fastjson 引擎。
+JSONObject legacy = JSON.parseObject(mapper, "{\"items\":[{\"count\":1}]}");
+JsonObject object = legacy;
+JsonArray items = legacy.getJSONArray("items");
+java.util.List<Object> list = items;
+((JSONObject) list.get(0)).put("count", 2);
+String json = mapper.write(object);
+```
+
+默认静态方法和无 mapper 构造器使用 Json.global；多配置应用使用显式 mapper 入口。
+Map/List 构造器共享源存储，嵌套读取按需提供兼容视图；修改方法返回旧值原引用，deepCopy 获取独立副本。
+输出直接复用持有的中立存储，不逐层调用旧名 getter 包装容器；嵌套旧名读取本身仍有视图分配。
+同一存储的重复视图不承诺对象身份。JSONPath、fastjson 注解、Feature、过滤器与旧
+TypeReference 不在兼容范围；泛型使用 JsonType，DTO 属性优先使用中立接口。
+任意 DTO 或泛型中声明弃用容器类型不保证跨 Provider 绑定；旧名适配放在 JSON 的根解析入口。
+这不是第三方二进制兼容包，不能直接替换外部依赖的 com.alibaba.fastjson 类。
+
 ### 访问、转换与位置
 
-- missing/null 都是非 Java null 视图；使用 isMissing/isNull，不比较单例身份。缺失导出失败。
-- getObject/getArray 支持名称和索引，缺失/null 可链式访问且不自动创建数据；实际形状不符会失败。asObject/asArray 严格要求实际容器。
+- node(name/index) 返回 JsonValue，区分 missing/null；使用 isMissing/isNull，缺失导出失败。普通集合 get 返回原始值，对象用 containsKey 区分缺失和 null。
+- getObject/getArray 支持名称和索引，缺失/null 返回 Java null；实际形状不符会失败。安全链式访问统一用 node，asObject/asArray 严格要求实际容器。
 - asInt/asLong 等基本类型在缺失/null 时返回零/false；asString/asInteger 等引用类型返回 null，也可显式指定默认值。实际值的转换失败不会用默认值吞掉。
 - present 值按所属 mapper 转换。mapper 创建、绑定的树和 deepCopy 保留配置；静态 JsonValue.object/array/of 无配置，实际值转换需显式 mapper.convert。
 - JsonPointer 为 RFC 6901，不是 JSONPath；空字符串表示根，~1/~0 转义斜线/波浪号，数组索引用规范十进制，不能用 01 或 - 读取。
@@ -393,11 +420,11 @@ wrap 创建只分配根视图，不遍历数据；子节点按访问包装，转
 - 路径保存段信息，不保留祖先树。deepCopy 从根开始，插入采用目的路径。节点不承诺结构 equals；未知字段遍历可导出 Map 快照，大文档改用游标/事件。
 
 ```java
-Integer port = root.get("config").get("port")
+Integer port = root.node("config").node("port")
     .requireNonNull(failure ->
         new IllegalArgumentException(failure.displayPath() + " 不能为空"))
     .asInteger();
-root.get("items").require(value -> value.size() > 0);
+root.node("items").require(value -> value.size() > 0);
 ```
 
 requirePresent 允许 JSON null，requireNonNull 同时拒绝缺失/null，require 接受谓词。成功返回当前节点；异常工厂只在失败时调用，返回的异常实例和谓词异常原样传播。默认失败为 VALIDATION。
@@ -512,7 +539,7 @@ writer 遵循 pretty，compactWriter/writeCompact 只为本次操作使用 compa
 
 独立游标的每次 readValue、iterator 的每个元素以及增量/响应式的每条记录，都使用独立绑定上下文：记录内部可有引用，记录之间不能靠 ID 相连。需要跨元素共享引用时，用一次 read 绑定整个数组；这会物化整个结果。Adapter 内嵌套读写保留当前上下文。逐次 writer.value 写出也使用逐值作用域，不等同于一次 write 整个对象图。
 
-结构树的 createObject/createArray、插入、deepCopy/toJavaValue 沿用所属映射器的 maxDepth，静态 JsonValue 工厂使用默认 256。复制从本次根容器计数，插入时包括目标容器；标量不增加深度。循环或过深数据在上限处以 LIMIT 失败，共享但无环的子容器正常复制。wrap 创建仍为 O(1)，仅在显式复制/导出时执行这一检查。
+结构树的 createObject/createArray 初始化、deepCopy/toJavaValue 沿用所属映射器的 maxDepth，静态 JsonValue 工厂使用默认 256。复制从本次根容器计数；标量不增加深度，普通集合插入不执行递归复制。循环或过深数据在上限处以 LIMIT 失败，共享但无环的子容器正常复制。wrap 创建仍为 O(1)，仅在显式复制/导出时执行这一检查。
 
 <a id="read-stream"></a>
 ## Reactor 流式读取
@@ -714,9 +741,11 @@ eventSession 使用同样协议返回 JsonEvent。read(cancelled) 可传线程�
 
 当前热点仍包括短记录响应式写入、token 交付、字符表示转换和树隔离。Native 对照若缺少背压/取消/预算，不可将全部差值解释为可移除成本。Netty 避免整块输入复制和中间输出数组，但小记录耗时未必受益，按真实负载选择 allocator 和段大小。
 
+只需已知类型的集合值时用普通 get；需要缺失/null 区分、路径诊断或 Provider 类型转换时用 node。旧名兼容层的嵌套读取仍会创建视图，适合迁移期使用；新代码直接采用中立集合。
+
 ### 验证与复现
 
-Java 17/21 各 329 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、fastjson2 树引用边界、Jackson 过滤 reader 拒绝、默认类型探测关闭与手动启用警告、JVM 类型配置隔离、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
+Java 17/21 各 337 项测试与编译、Checkstyle、SpotBugs、覆盖率门禁通过，包含三套 Provider 的同步行为、操作配置隔离、结构复制深度/环限制、原生对象引用作用域、fastjson2 树引用边界、Jackson 过滤 reader 拒绝、默认类型探测关闭与手动启用警告、JVM 类型配置隔离、并发首次全局解析和 Spring 启动锁反转回归。同步迭代器在 Jackson 2/3 上通过约 64 MiB 数组/32 MiB 堆及关闭输入释放验证；两 JDK/Jackson Provider 的四个独立 JVM 还各在 32 MiB 堆消费了 100 万条不同 ID、记录内自环的数据。fastjson2 在两 JDK 各完成了 32 MiB 堆下的 100 万次独立同步读写，校验引用身份、操作变体和输入所有权；这不代表其支持有界流式解析。已有至少 1 GiB 聚合文档的 128 MiB 堆验证；池化适配还限制直接内存并检查结束时零 pinned bytes。这证明对应有界场景，不保证任意巨大单值、并发或 RSS 恒定。完整范围见 [验证契约](contracts.md#implementation-and-validation)。
 
 完成源码构建后按需运行；默认大文档矩阵耗时较长：
 
@@ -732,6 +761,8 @@ python3 scripts/run-databuffer-stress.py
 python3 scripts/run-databuffer-stress.py --release-only
 python3 scripts/run-streaming-benchmarks.py
 python3 scripts/run-streaming-benchmarks.py --tree
+python3 scripts/run-streaming-benchmarks.py --tree-wrap
+python3 scripts/run-streaming-benchmarks.py --collections
 python3 scripts/run-streaming-benchmarks.py --iterator
 python3 scripts/run-streaming-benchmarks.py --iterator -p payload=map,dto,nested -p records=65536 -p textSize=1000
 python3 scripts/run-streaming-benchmarks.py --events -p textSize=20,1000

@@ -14,6 +14,7 @@ Documentation: [完整中文使用手册](docs/user-guide.md) · [Public contrac
 | `json-facade-jackson2` | Jackson 2 Provider | API, Jackson 2 |
 | `json-facade-jackson3` | Jackson 3 Provider | API, Jackson 3 |
 | `json-facade-fastjson2` | Synchronous fastjson2 binding with explicit native limits | API, fastjson2 |
+| `json-facade-compat-fastjson` | Deprecated source migration JSON/JSONObject/JSONArray names | API only |
 | `json-facade-reactor` | Reactive byte[] / ByteBuffer operations | API, reactor-core |
 | `json-facade-netty` | Optional retained ByteBuf input and allocated segmented output | Reactor adapter, Netty buffer/common |
 | `json-facade-spring` | Spring 6 / Boot 3 default-mapper bridge and explicit DataBuffer streams | Jackson 2 Provider, Spring Context; Boot/Reactor optional |
@@ -118,11 +119,11 @@ See [Netty usage and ownership](docs/user-guide.md#netty) before adding async qu
 
 ## Trees and structured documents
 
-`JsonMapper.createObject()` / `createArray()` return the neutral `JsonObject` / `JsonArray` interfaces. Map/Collection initializers and mutations copy nested JSON containers; object keys are Strings. `toJavaValue()` exports an independent JDK snapshot. Use `toTree(bean)` for configured POJO mapping.
+`JsonMapper.createObject()` / `createArray()` return the neutral `JsonObject` / `JsonArray` interfaces. They extend Map<String, Object> / List<Object>: get returns raw values and writes retain references. Factory initializers copy nested JSON containers; object keys are Strings. `toJavaValue()` exports an independent JDK snapshot. Use `toTree(bean)` for configured POJO mapping.
 
 Node-level conversion and validation support calls such as
-`tree.get("config").get("port").requireNonNull().asInt()` and
-`tree.getArray("items").get(0).asInteger()`. Missing/null locations remain chainable;
+`tree.node("config").node("port").requireNonNull().asInt()` and
+`tree.getArray("items").node(0).asInteger()`. Missing/null locations remain chainable through `node`;
 present values use the owning Provider configuration. Errors carry structured access paths,
 and assertion factories can return application exceptions. See the [tree guide](docs/user-guide.md#tree).
 

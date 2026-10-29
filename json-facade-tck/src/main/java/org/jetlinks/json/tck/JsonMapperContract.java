@@ -64,24 +64,24 @@ public abstract class JsonMapperContract extends JsonOperationContract {
         List<Object> original = new ArrayList<>(List.of(1, 2));
         JsonObject object = json.createObject(Map.of("rows", original));
         original.add(3);
-        assertEquals(2, object.get("rows").size());
-        object.get("rows").add(null);
+        assertEquals(2, object.getArray("rows").size());
+        object.getArray("rows").add(null);
         assertEquals(List.of(1, 2, 3), original);
         Map<?, ?> exported = (Map<?, ?>) object.toJavaValue();
         ((List<?>) exported.get("rows")).clear();
-        assertEquals(3, object.get("rows").size());
+        assertEquals(3, object.getArray("rows").size());
         JsonArray array = json.createArray(List.of(object, new int[]{4, 5}));
         object.put("later", true);
-        assertTrue(array.get(0).get("later").isMissing());
-        assertEquals(5, array.get(1).get(1).toJavaValue());
+        assertTrue(array.node(0).node("later").isMissing());
+        assertEquals(5, array.node(1).node(1).toJavaValue());
         assertEquals(array.toJavaValue(), json.read(json.write(array), JsonArray.class).toJavaValue());
         assertEquals(object.toJavaValue(), json.read(json.write(object), JsonObject.class).toJavaValue());
         assertEquals(Map.of("tree", object.toJavaValue()),
                 json.read(json.write(Map.of("tree", object)), Map.class));
         assertInstanceOf(JsonArray.class, json.createArray());
         assertThrows(IllegalArgumentException.class, () -> JsonValue.of(Map.of(1, "value")));
-        assertThrows(IllegalArgumentException.class, () -> json.createArray().add(new Item(1)));
-        assertThrows(IllegalStateException.class, () -> json.createArray().add(JsonValue.MISSING));
+        assertThrows(IllegalArgumentException.class, () -> json.createArray(List.of(new Item(1))));
+        assertThrows(IllegalStateException.class, () -> json.createArray(List.of(JsonValue.MISSING)));
         assertEquals(JsonException.Kind.BINDING,
                 assertThrows(JsonException.class, () -> json.read("[]", JsonObject.class)).kind());
     }
@@ -422,7 +422,7 @@ public abstract class JsonMapperContract extends JsonOperationContract {
             fields.put("label", new Label("中\ud83d\ude00"));
             Object[] values = {null, "plain", "中\ud83d\ude00", "x\ud800", "x\udc00",
                     "\\\"\b\f\n\r\t", "设备\ud83d\ude00".repeat(3000), new BigDecimal("1.2300"),
-                    Double.NaN, fields, JsonValue.object().put("items", JsonValue.array().add(1).add(null))};
+                    Double.NaN, fields, JsonValue.of(Map.of("items", java.util.Arrays.asList(1, null)))};
             for (Object value : values) {
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 json.write(value, output);
@@ -456,15 +456,16 @@ public abstract class JsonMapperContract extends JsonOperationContract {
     @Test
     void neutralTreeRoundTripsWithoutEngineTypes() {
         JsonMapper json = mapper();
-        JsonValue tree = JsonValue.object().put("n", null).put("rows", JsonValue.array().add(1).add("中"));
-        assertTrue(tree.get("n").isNull());
-        assertTrue(tree.get("absent").isMissing());
+        JsonObject tree = json.createObject(Map.of("rows", List.of(1, "中")));
+        tree.put("n", null);
+        assertTrue(tree.node("n").isNull());
+        assertTrue(tree.node("absent").isMissing());
         assertEquals("中", tree.at(JsonPointer.of("/rows/1")).toJavaValue());
         assertEquals(tree.toJavaValue(), json.readTree(json.write(tree)).toJavaValue());
         assertEquals(Map.of("value", 8), json.toTree(new Item(8)).toJavaValue());
-        assertEquals(3, json.convert(JsonValue.object().put("value", 3), Item.class).value);
+        assertEquals(3, json.convert(JsonValue.of(Map.of("value", 3)), Item.class).value);
         assertEquals(Map.of("tree", Map.of("n", 1)),
-                json.read(json.write(Map.of("tree", JsonValue.object().put("n", 1))), Map.class));
+                json.read(json.write(Map.of("tree", JsonValue.of(Map.of("n", 1)))), Map.class));
     }
 
     @Test
@@ -528,9 +529,9 @@ public abstract class JsonMapperContract extends JsonOperationContract {
                 new ByteArrayInputStream("[null,{\"port\":\"1883\"}]".getBytes(StandardCharsets.UTF_8)), JsonValue.class)) {
             assertTrue(iterator.next().isNull());
             JsonValue value = iterator.next();
-            assertEquals(1883, value.get("port").asInt());
+            assertEquals(1883, value.node("port").asInt());
             assertFalse(iterator.hasNext());
-            assertEquals(1883, value.get("port").asInt());
+            assertEquals(1883, value.node("port").asInt());
         }
         JsonMapper strict = mapper(JsonOptions.DEFAULT.withFailUnknownProperties(true));
         try (CloseableIterator<Item> iterator = strict.iterateArray(

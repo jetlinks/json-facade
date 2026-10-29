@@ -27,6 +27,7 @@ def main():
     fixtures.add_argument("--netty", action="store_true", help="Compare ordinary and pooled Netty paths")
     fixtures.add_argument("--tree", action="store_true", help="Compare chained and fused tree access")
     fixtures.add_argument("--tree-wrap", action="store_true", help="Compare borrowed and copied Map/List trees")
+    fixtures.add_argument("--collections", action="store_true", help="Compare JDK, neutral and migration collections")
     fixtures.add_argument("--global-lookup", action="store_true", help="Compare published global and direct references")
     fixtures.add_argument("--iterator", action="store_true", help="Compare configured native/cursor/iterator binding")
     fixtures.add_argument("--events", action="store_true", help="Separate native, Session and Reactor event costs")
@@ -47,6 +48,10 @@ def main():
     if args.fastjson2:
         base_cp = runpy.run_path(str(ROOT / "scripts" / "run-fastjson2-stress.py"))["classpath"]()
         fixture, package = "Fastjson2Benchmark", "org.jetlinks.json"
+    elif args.collections:
+        fast_cp = runpy.run_path(str(ROOT / "scripts" / "run-fastjson2-stress.py"))["classpath"]()
+        base_cp += os.pathsep + fast_cp + os.pathsep + str(ROOT / "json-facade-compat-fastjson" / "target" / "classes")
+        fixture, package = "CollectionBenchmark", "org.jetlinks.json"
     elif args.operation_options:
         fixture, package = "OperationOptionsBenchmark", "org.jetlinks.json"
     elif args.global_lookup:
@@ -76,7 +81,8 @@ def main():
     ]
     options = [item for flag, value in defaults if flag not in extra for item in (flag, value)]
     multiple = args.tree or args.tree_wrap or args.global_lookup or args.iterator \
-        or args.provider_read or args.published_write or args.operation_options or args.fastjson2 or args.events
+        or args.provider_read or args.published_write or args.operation_options or args.fastjson2 or args.events \
+        or args.collections
     benchmark = "^" + re.escape(f"{package}.{fixture}") + (r"\..*$" if multiple else r"\.run$")
     subprocess.run(["java", "-cp", cp, "org.openjdk.jmh.Main", benchmark]
                    + options + extra, check=True, cwd=ROOT)

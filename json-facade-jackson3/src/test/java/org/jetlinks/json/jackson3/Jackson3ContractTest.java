@@ -173,13 +173,13 @@ class Jackson3ContractTest extends JsonMapperContract {
                                         tools.jackson.databind.cfg.CoercionInputShape.String,
                                         tools.jackson.databind.cfg.CoercionAction.Fail)))
                 .build();
-        assertEquals(12, ordinary.createObject(java.util.Map.of("n", "12")).get("n").asInteger());
+        assertEquals(12, ordinary.createObject(java.util.Map.of("n", "12")).node("n").asInteger());
         JsonException error = assertThrows(JsonException.class,
-                () -> strict.readTree("{\"n\":\"12\"}").get("n").asInteger(99));
+                () -> strict.readTree("{\"n\":\"12\"}").node("n").asInteger(99));
         assertEquals(JsonException.Kind.BINDING, error.kind());
         assertEquals("/n", error.pointer().toString());
-        assertEquals(99, strict.createObject().get("missing").asInteger(99));
-        assertEquals(12, strict.createObject(java.util.Map.of("n", 12)).get("n").asInteger());
+        assertEquals(99, strict.createObject().node("missing").asInteger(99));
+        assertEquals(12, strict.createObject(java.util.Map.of("n", 12)).node("n").asInteger());
     }
 
     @Test
@@ -203,8 +203,8 @@ class Jackson3ContractTest extends JsonMapperContract {
         items.add(2);
         shared.put("later", 3);
         for (JsonValue tree : trees) {
-            assertEquals(List.of(1), tree.get("items").toJavaValue());
-            assertTrue(tree.get("later").isMissing());
+            assertEquals(List.of(1), tree.node("items").toJavaValue());
+            assertTrue(tree.node("later").isMissing());
             JsonArray nested = tree.getArray("items");
             nested.add(4);
         }

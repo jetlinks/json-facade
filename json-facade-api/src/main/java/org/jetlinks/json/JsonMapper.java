@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
  * record Device(String id, boolean online) {}
  * Device device = mapper.read("{\"id\":\"dev-1\",\"online\":true}", Device.class);
  * String json = mapper.write(device); // {"id":"dev-1","online":true}
- * int first = mapper.readTree("[1,2]").asArray().get(0).asInt(); // 1
+ * int first = mapper.readTree("[1,2]").asArray().node(0).asInt(); // 1
  * }</pre>
  * <p>已持有 Map/POJO 时用 {@link #convert(Object, Class)}；不确定字段结构时用 {@link #readTree(String)}。
  * 大数组逐条消费用 {@link #iterateArray(InputStream, Class)}；
@@ -288,7 +288,9 @@ public interface JsonMapper {
     /**
      * 创建可修改的空 JSON 对象，适合动态拼装少量字段。
      * <pre>{@code
-     * JsonObject value = mapper.createObject().put("id", "dev-1").put("online", true);
+     * JsonObject value = mapper.createObject();
+     * value.put("id", "dev-1");
+     * value.put("online", true);
      * String json = mapper.write(value); // {"id":"dev-1","online":true}
      * }</pre>
      * 节点保留当前映射器，后续 {@code value.as(Device.class)} 使用相同绑定配置。
@@ -301,7 +303,8 @@ public interface JsonMapper {
      * 将已有 Map 复制成可修改的 JSON 对象，适合追加、删除字段而不修改原数据。
      * <pre>{@code
      * var source = java.util.Map.of("id", "dev-1");
-     * JsonObject value = mapper.createObject(source).put("online", true);
+     * JsonObject value = mapper.createObject(source);
+     * value.put("online", true);
      * // source 仍只有 id；value 含 id 和 online
      * }</pre>
      * 递归复制容器并保留显式 null；源须为结构工厂支持的无环 JSON 数据，POJO 请用 {@link #toTree(Object)}。
@@ -309,19 +312,12 @@ public interface JsonMapper {
      * 只读访问且要避免复制时用 {@link #wrap(java.util.Map)}。
      */
     default JsonObject createObject(java.util.Map<String, ?> values) {
-        JsonObject result = createObject();
-        for (java.util.Map.Entry<?, ?> entry : values.entrySet()) {
-            if (!(entry.getKey() instanceof String name)) {
-                throw new IllegalArgumentException("JSON object keys must be Strings");
-            }
-            result.put(name, entry.getValue());
-        }
-        return result;
+        return org.jetlinks.json.internal.JsonValues.of(values, this).asObject();
     }
 
     /**
      * 创建可修改的空 JSON 数组，适合动态收集少量 JSON 值。
-     * {@code JsonArray values = mapper.createArray().add(1).add(2);}
+     * {@code JsonArray values = mapper.createArray(java.util.List.of(1, 2));}
      * 节点保留当前映射器；超大结果逐条输出时用 {@link #writer(OutputStream)}。
      */
     default JsonArray createArray() {
@@ -335,9 +331,7 @@ public interface JsonMapper {
      * 元素须为结构工厂支持的 JSON 数据，POJO 集合请用 {@link #toTree(Object)}。
      */
     default JsonArray createArray(java.util.Collection<?> values) {
-        JsonArray result = createArray();
-        values.forEach(result::add);
-        return result;
+        return org.jetlinks.json.internal.JsonValues.of(values, this).asArray();
     }
 
     /**
@@ -348,7 +342,7 @@ public interface JsonMapper {
      * source.put("count", 1);
      * JsonObject view = mapper.wrap(source);
      * source.put("count", 2);
-     * int count = view.get("count").asInt(); // 2，外部修改可见
+     * int count = view.node("count").asInt(); // 2，外部修改可见
      * JsonValue copy = view.deepCopy();     // 需要独立可修改树时再复制
      * // view.put("count", 3) 会抛 UnsupportedOperationException
      * }</pre>
@@ -371,7 +365,7 @@ public interface JsonMapper {
     /**
      * 借用 List 为只读数组视图；源数据和所有权约束同 {@link #wrap(java.util.Map)}。
      * 创建时不访问元素，子容器按需包装；转换和序列化仍使用当前映射器配置。
-     * {@code int first = mapper.wrap(java.util.List.of(10, 20)).get(0).asInt(); // 10}
+     * {@code int first = mapper.wrap(java.util.List.of(10, 20)).node(0).asInt(); // 10}
      * 需要修改且不影响源 List 时，用 {@link #createArray(java.util.Collection)}。
      *
      * @param values 调用方持有的非空 List
@@ -450,7 +444,7 @@ public interface JsonMapper {
      * 将 JSON 文本解析为可修改树，适合字段结构不固定、按路径取值或增删字段。
      * <pre>{@code
      * JsonValue array = mapper.readTree("[1]");
-     * int first = array.asArray().get(0).asInt(); // 1
+     * int first = array.asArray().node(0).asInt(); // 1
      * JsonObject device = mapper.readTree("{\"id\":\"dev-1\"}").asObject();
      * device.put("online", true);
      * String json = mapper.write(device);

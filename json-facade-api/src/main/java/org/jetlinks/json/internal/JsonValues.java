@@ -4,6 +4,16 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.AbstractMap;
+import java.util.AbstractList;
+import java.util.AbstractSet;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.ListIterator;
+import java.util.Comparator;
+import java.util.function.BiFunction;
+import java.util.function.Predicate;
+import java.util.function.UnaryOperator;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -41,6 +51,14 @@ public final class JsonValues {
     private JsonValues() {
     }
 
+    /**
+     * 内部透明节点代理，供同步绑定复用已有存储，避免遍历时反复创建容器视图。
+     * 代理须保留所属映射器和所有权；返回值不得是自身，调用方不得保留底层绑定图。
+     */
+    public interface DelegatingValue extends JsonValue {
+        JsonValue delegateValue();
+    }
+
     public static JsonValue nullValue() {
         return new BaseValue(null, false, null, JsonPath.ROOT);
     }
@@ -63,6 +81,16 @@ public final class JsonValues {
 
     public static JsonArray array(JsonMapper mapper) {
         return new ArrayValue(new ArrayList<>(), mapper, JsonPath.ROOT, false);
+    }
+
+    /** 内部适配入口：共享调用方明确提供的可写存储；不复制、不改变其修改语义。 */
+    public static JsonObject mutableObject(Map<String, Object> values, JsonMapper mapper) {
+        return new ObjectValue(Objects.requireNonNull(values, "values"), mapper, JsonPath.ROOT, false);
+    }
+
+    /** mutableObject 的数组入口，供独立迁移模块复用标准集合实现。 */
+    public static JsonArray mutableArray(List<Object> values, JsonMapper mapper) {
+        return new ArrayValue(Objects.requireNonNull(values, "values"), mapper, JsonPath.ROOT, false);
     }
 
     /** Borrow JSON-only storage without walking it; nested access preserves read-only ownership. */
@@ -89,6 +117,16 @@ public final class JsonValues {
         if (value instanceof BaseValue node) {
             node.checkPresent();
             return node.value;
+        }
+        if (value instanceof DelegatingValue node) {
+            return bindingValue(node.delegateValue());
+        }
+        // 自定义集合节点通过普通 JDK 视图交给原生 Map/List 绑定，避免整树快照与重复序列化。
+        if (value instanceof JsonObject object) {
+            return Collections.unmodifiableMap(object);
+        }
+        if (value instanceof JsonArray array) {
+            return Collections.unmodifiableList(array);
         }
         return value instanceof JsonValue node ? node.toJavaValue() : value;
     }
@@ -117,7 +155,7 @@ public final class JsonValues {
 
     public static JsonObject objectView(JsonValue node) {
         if (node.isMissing() || node.isNull()) {
-            return new AbsentObject(node);
+            return null;
         }
         if (node instanceof JsonObject object) {
             return object;
@@ -129,19 +167,19 @@ public final class JsonValues {
         if (!node.isMissing() && !node.isNull() && !(node instanceof JsonObject)) {
             throw shapeFailure(node, "object");
         }
-        return node.get(name);
+        return node.node(name);
     }
 
     public static JsonValue element(JsonValue node, int index) {
         if (!node.isMissing() && !node.isNull() && !(node instanceof JsonArray)) {
             throw shapeFailure(node, "array");
         }
-        return node.get(index);
+        return node.node(index);
     }
 
     public static JsonArray arrayView(JsonValue node) {
         if (node.isMissing() || node.isNull()) {
-            return new AbsentArray(node);
+            return null;
         }
         if (node instanceof JsonArray array) {
             return array;
@@ -186,7 +224,8 @@ public final class JsonValues {
         if (value instanceof List<?> list) {
             return new ArrayValue(list, mapper, path, borrowed);
         }
-        return new BaseValue(borrowed ? scalar(value) : value, false, mapper, path);
+        Object scalarValue = value instanceof JsonValue node ? bindingValue(node) : value;
+        return new BaseValue(borrowed ? scalar(scalarValue) : scalarValue, false, mapper, path);
     }
 
     private static Object copy(Object value, JsonMapper mapper, int depth) {
@@ -278,12 +317,6 @@ public final class JsonValues {
             this.borrowed = borrowed;
         }
 
-        BaseValue(JsonValue absent) {
-            this(null, absent.isMissing(), absent instanceof BaseValue view ? view.mapper : null,
-                    absent instanceof BaseValue view ? view.path
-                            : JsonPath.location(absent.pointer(), absent.displayPath()));
-        }
-
         void checkPresent() {
             if (missing) {
                 throw new IllegalStateException("Missing JSON is not a value");
@@ -294,12 +327,6 @@ public final class JsonValues {
             if (borrowed) {
                 throw new UnsupportedOperationException("Borrowed JSON views are read-only; use deepCopy to edit");
             }
-        }
-
-        JsonException absentWrite() {
-            return failure(this, JsonException.Kind.BINDING,
-                    missing ? JsonFailure.Reason.MISSING : JsonFailure.Reason.NULL,
-                    "Cannot modify an absent JSON container");
         }
 
         @Override
@@ -329,12 +356,12 @@ public final class JsonValues {
         }
 
         @Override
-        public JsonValue get(String name) {
+        public JsonValue node(String name) {
             return new BaseValue(null, true, mapper, path.field(name));
         }
 
         @Override
-        public JsonValue get(int index) {
+        public JsonValue node(int index) {
             return new BaseValue(null, true, mapper, path.index(index));
         }
 
@@ -394,76 +421,179 @@ public final class JsonValues {
         }
     }
 
+    /** Map 契约直接委托 JDK；节点访问单独携带路径，不改变普通 get 的值类型。 */
     private static final class ObjectValue extends BaseValue implements JsonObject {
+        private final Map<String, Object> raw;
         private final Map<String, Object> values;
 
         @SuppressWarnings("unchecked")
-        ObjectValue(Map<?, ?> values, JsonMapper mapper, JsonPath path, boolean borrowed) {
-            super(values, false, mapper, path, borrowed);
-            this.values = (Map<String, Object>) values;
+        ObjectValue(Map<?, ?> source, JsonMapper mapper, JsonPath path, boolean borrowed) {
+            super(source, false, mapper, path, borrowed);
+            raw = (Map<String, Object>) source;
+            values = borrowed ? Collections.unmodifiableMap(readOnlyObject(raw, mapper, path)) : raw;
         }
 
         @Override
-        public JsonValue get(String name) {
+        public JsonValue node(String name) {
             JsonPath child = path.field(name);
-            Object value = values.get(name);
-            return value != null || values.containsKey(name) ? wrap(value, mapper, child, borrowed)
+            Object value = raw.get(name);
+            return value != null || raw.containsKey(name) ? wrap(value, mapper, child, borrowed)
                     : new BaseValue(null, true, mapper, child);
-        }
-
-        @Override
-        public JsonObject put(String name, Object value) {
-            checkWritable();
-            values.put(Objects.requireNonNull(name, "name"), copy(value, mapper, 1));
-            return this;
-        }
-
-        @Override
-        public JsonObject remove(String name) {
-            checkWritable();
-            values.remove(name);
-            return this;
         }
 
         @Override
         public int size() {
             return values.size();
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return values.isEmpty();
+        }
+
+        @Override
+        public boolean containsKey(Object key) {
+            return values.containsKey(key);
+        }
+
+        @Override
+        public boolean containsValue(Object value) {
+            return values.containsValue(value);
+        }
+
+        @Override
+        public Object get(Object key) {
+            return values.get(key);
+        }
+
+        @Override
+        public Object put(String key, Object value) {
+            return values.put(Objects.requireNonNull(key, "key"), value);
+        }
+
+        @Override
+        public Object remove(Object key) {
+            return values.remove(key);
+        }
+
+        @Override
+        public void clear() {
+            values.clear();
+        }
+
+        @Override
+        public Set<String> keySet() {
+            return values.keySet();
+        }
+
+        @Override
+        public Collection<Object> values() {
+            return values.values();
+        }
+
+        @Override
+        public Set<Map.Entry<String, Object>> entrySet() {
+            return values.entrySet();
+        }
+
+        @Override
+        public Object getOrDefault(Object key, Object fallback) {
+            return values.getOrDefault(key, fallback);
+        }
+
+        @Override
+        public Object putIfAbsent(String key, Object value) {
+            return values.putIfAbsent(Objects.requireNonNull(key, "key"), value);
+        }
+
+        @Override
+        public boolean remove(Object key, Object value) {
+            return values.remove(key, value);
+        }
+
+        @Override
+        public Object replace(String key, Object value) {
+            return values.replace(key, value);
+        }
+
+        @Override
+        public boolean replace(String key, Object oldValue, Object newValue) {
+            return values.replace(key, oldValue, newValue);
+        }
+
+        @Override
+        public void replaceAll(BiFunction<? super String, ? super Object, ?> function) {
+            values.replaceAll(function);
+        }
+
+        @Override
+        public Object computeIfAbsent(String key, Function<? super String, ?> function) {
+            return values.computeIfAbsent(Objects.requireNonNull(key, "key"), function);
+        }
+
+        @Override
+        public Object computeIfPresent(String key, BiFunction<? super String, ? super Object, ?> function) {
+            return values.computeIfPresent(Objects.requireNonNull(key, "key"), function);
+        }
+
+        @Override
+        public Object compute(String key, BiFunction<? super String, ? super Object, ?> function) {
+            return values.compute(Objects.requireNonNull(key, "key"), function);
+        }
+
+        @Override
+        public Object merge(String key, Object value, BiFunction<? super Object, ? super Object, ?> function) {
+            return values.merge(Objects.requireNonNull(key, "key"), value, function);
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return values.equals(other);
+        }
+
+        @Override
+        public int hashCode() {
+            return values.hashCode();
         }
 
         @Override
         public JsonObject deepCopy() {
             return (JsonObject) super.deepCopy();
         }
+
+        @Override
+        public void putAll(Map<? extends String, ?> source) {
+            checkWritable();
+            source.forEach(this::put);
+        }
     }
 
     private static final class ArrayValue extends BaseValue implements JsonArray {
+        private final List<Object> raw;
         private final List<Object> values;
 
         @SuppressWarnings("unchecked")
-        ArrayValue(List<?> values, JsonMapper mapper, JsonPath path, boolean borrowed) {
-            super(values, false, mapper, path, borrowed);
-            this.values = (List<Object>) values;
+        ArrayValue(List<?> source, JsonMapper mapper, JsonPath path, boolean borrowed) {
+            super(source, false, mapper, path, borrowed);
+            raw = (List<Object>) source;
+            values = borrowed ? Collections.unmodifiableList(new AbstractList<>() {
+                @Override
+                public Object get(int index) {
+                    return readOnlyChild(raw.get(index), mapper, path.index(index));
+                }
+
+                @Override
+                public int size() {
+                    return raw.size();
+                }
+            }) : raw;
         }
 
         @Override
-        public JsonValue get(int index) {
+        public JsonValue node(int index) {
             JsonPath child = path.index(index);
-            return index >= 0 && index < values.size() ? wrap(values.get(index), mapper, child, borrowed)
+            return index >= 0 && index < raw.size() ? wrap(raw.get(index), mapper, child, borrowed)
                     : new BaseValue(null, true, mapper, child);
-        }
-
-        @Override
-        public JsonArray add(Object value) {
-            checkWritable();
-            values.add(copy(value, mapper, 1));
-            return this;
-        }
-
-        @Override
-        public JsonArray set(int index, Object value) {
-            checkWritable();
-            values.set(index, copy(value, mapper, 1));
-            return this;
         }
 
         @Override
@@ -472,51 +602,197 @@ public final class JsonValues {
         }
 
         @Override
+        public boolean isEmpty() {
+            return values.isEmpty();
+        }
+
+        @Override
+        public boolean contains(Object value) {
+            return values.contains(value);
+        }
+
+        @Override
+        public Iterator<Object> iterator() {
+            return values.iterator();
+        }
+
+        @Override
+        public Object[] toArray() {
+            return values.toArray();
+        }
+
+        @Override
+        public <T> T[] toArray(T[] array) {
+            return values.toArray(array);
+        }
+
+        @Override
+        public Object get(int index) {
+            return values.get(index);
+        }
+
+        @Override
+        public Object set(int index, Object value) {
+            return values.set(index, value);
+        }
+
+        @Override
+        public boolean add(Object value) {
+            return values.add(value);
+        }
+
+        @Override
+        public void add(int index, Object value) {
+            values.add(index, value);
+        }
+
+        @Override
+        public Object remove(int index) {
+            return values.remove(index);
+        }
+
+        @Override
+        public boolean remove(Object value) {
+            return values.remove(value);
+        }
+
+        @Override
+        public boolean containsAll(Collection<?> source) {
+            return values.containsAll(source);
+        }
+
+        @Override
+        public boolean addAll(Collection<?> source) {
+            return values.addAll(source);
+        }
+
+        @Override
+        public boolean addAll(int index, Collection<?> source) {
+            return values.addAll(index, source);
+        }
+
+        @Override
+        public boolean removeAll(Collection<?> source) {
+            return values.removeAll(source);
+        }
+
+        @Override
+        public boolean retainAll(Collection<?> source) {
+            return values.retainAll(source);
+        }
+
+        @Override
+        public void clear() {
+            values.clear();
+        }
+
+        @Override
+        public int indexOf(Object value) {
+            return values.indexOf(value);
+        }
+
+        @Override
+        public int lastIndexOf(Object value) {
+            return values.lastIndexOf(value);
+        }
+
+        @Override
+        public ListIterator<Object> listIterator() {
+            return values.listIterator();
+        }
+
+        @Override
+        public ListIterator<Object> listIterator(int index) {
+            return values.listIterator(index);
+        }
+
+        @Override
+        public List<Object> subList(int start, int end) {
+            return values.subList(start, end);
+        }
+
+        @Override
+        public boolean removeIf(Predicate<? super Object> predicate) {
+            return values.removeIf(predicate);
+        }
+
+        @Override
+        public void replaceAll(UnaryOperator<Object> function) {
+            values.replaceAll(function);
+        }
+
+        @Override
+        public void sort(Comparator<? super Object> comparator) {
+            values.sort(comparator);
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return values.equals(other);
+        }
+
+        @Override
+        public int hashCode() {
+            return values.hashCode();
+        }
+
+        @Override
         public JsonArray deepCopy() {
             return (JsonArray) super.deepCopy();
         }
+
     }
 
-    /** Absent typed views are read-only and distinct from actual empty containers. */
-    private static final class AbsentObject extends BaseValue implements JsonObject {
-        AbsentObject(JsonValue node) {
-            super(node);
-        }
-
-        @Override
-        public JsonObject put(String name, Object value) {
-            throw absentWrite();
-        }
-
-        @Override
-        public JsonObject remove(String name) {
-            throw absentWrite();
-        }
-
-        @Override
-        public JsonObject deepCopy() {
-            return new AbsentObject(super.deepCopy());
-        }
+    /** 外层只读包装不能保护嵌套值；所有读取入口经过同一按需只读视图。 */
+    private static Object readOnlyChild(Object value, JsonMapper mapper, JsonPath path) {
+        return value instanceof Map<?, ?> || value instanceof List<?> ? wrap(value, mapper, path, true) : scalar(value);
     }
 
-    private static final class AbsentArray extends BaseValue implements JsonArray {
-        AbsentArray(JsonValue node) {
-            super(node);
-        }
+    private static Map<String, Object> readOnlyObject(Map<String, Object> raw, JsonMapper mapper, JsonPath path) {
+        return new AbstractMap<>() {
+            @Override
+            public Object get(Object key) {
+                return key instanceof String name ? readOnlyChild(raw.get(name), mapper, path.field(name)) : null;
+            }
 
-        @Override
-        public JsonArray add(Object value) {
-            throw absentWrite();
-        }
+            @Override
+            public boolean containsKey(Object key) {
+                return raw.containsKey(key);
+            }
 
-        @Override
-        public JsonArray set(int index, Object value) {
-            throw absentWrite();
-        }
+            @Override
+            public int size() {
+                return raw.size();
+            }
 
-        @Override
-        public JsonArray deepCopy() {
-            return new AbsentArray(super.deepCopy());
-        }
+            @Override
+            public Set<Entry<String, Object>> entrySet() {
+                return new AbstractSet<>() {
+                    @Override
+                    public int size() {
+                        return raw.size();
+                    }
+
+                    @Override
+                    public Iterator<Entry<String, Object>> iterator() {
+                        Iterator<Entry<String, Object>> source = raw.entrySet().iterator();
+                        return new Iterator<>() {
+                            @Override
+                            public boolean hasNext() {
+                                return source.hasNext();
+                            }
+
+                            @Override
+                            public Entry<String, Object> next() {
+                                Entry<String, Object> entry = source.next();
+                                String key = entry.getKey();
+                                return new SimpleImmutableEntry<>(key,
+                                        readOnlyChild(entry.getValue(), mapper, path.field(key)));
+                            }
+                        };
+                    }
+                };
+            }
+        };
     }
 }

@@ -3,6 +3,21 @@
 For installation and examples, see the [Chinese user guide](user-guide.md).
 This document describes the current implementation and its verification boundaries.
 
+## Collection API and migration
+
+`JsonObject` is a `Map<String, Object>` and `JsonArray`
+a `List<Object>`. Collection reads/writes follow JDK contracts; `node(name/index)`
+retains path-aware missing/null access. Insertions retain references; independent
+copying remains explicit in factories, `deepCopy` and `toJavaValue`. Typed container
+access returns Java null for missing/null. Borrowed views remain recursively
+read-only through collection methods and views. An optional deprecated migration
+module provides self-owned `JSON`/`JSONObject`/`JSONArray` names without a fastjson
+dependency; engine binding remains with `JsonMapper`. Compatibility reads lazily
+adapt nested containers, while mutations return the original previous value.
+This is source migration within the facade's own package, not binary compatibility
+with fastjson. Native annotations, Feature flags and deprecated container types
+nested in arbitrary DTO/generic declarations are outside its binding contract.
+
 ## Fastjson2 support
 
 `json-facade-fastjson2` supplies Provider ID `fastjson2`, using fastjson2 2.0.66
@@ -250,73 +265,77 @@ factories use JDK storage. Structural factories accept acyclic JSON-compatible
 scalars, String-keyed Maps, Collections and Java arrays. Arbitrary POJOs use
 configured `toTree`. Structural byte[] becomes an array; native binding can
 encode it as Base64.
-Structural copying uses the owning mapper's `maxDepth`, or
-`JsonOptions.DEFAULT.maxDepth()` for unbound nodes. Containers count toward the
-limit; scalar values do not. Insertions include the destination container in the
-copy budget. Excess depth and cyclic inputs fail with `JsonException(LIMIT)` at
-the limit, without a separate object-identity table or graph pre-scan. Shared
-acyclic children are copied independently. Wrapping still performs no traversal.
+`JsonObject` extends `Map<String, Object>` and `JsonArray` extends `List<Object>`.
+Collection `get` returns raw values; Map writes return previous values and List
+writes follow JDK signatures, bounds, equality and view semantics. Insertions retain
+references and do not scan or copy containers; supplied immutable children stay immutable.
+Values intended for structural
+copying must satisfy the structural JSON data contract; arbitrary POJOs use Provider
+binding. Null keys are rejected by object insertion.
 
-Initializers, insertion, `deepCopy` and `toJavaValue` defensively copy nested
-containers. `JsonValue.of(existingNode)` retains that node's identity. Structural
-numbers accept exactly Byte, Short, Integer, Long, Float, Double, BigInteger and
-BigDecimal; other Number classes, including subclasses of the latter two, fail
-before mutation. Use `toTree` for configured binding of other Java numbers.
-Binding results still require defensive copying: custom native deserializers
-may return shared containers. Synchronous binding may borrow the internal JDK
-tree but must not expose or retain its backing graph.
+`node(name/index)` provides path-aware JsonValue access independently of collection
+get: missing and JSON null are distinct non-null nodes. Typed `getObject/getArray`
+return Java null for missing/null and reject actual shape mismatches. `asObject`
+and `asArray` require actual matching containers. JsonValue exposes no mutators;
+mutations use collection interfaces. Plain JSON null values use Java null in collections.
 
-`JsonMapper.wrap(Map/List)` borrows existing JSON data as read-only views.
-Creation takes O(1) time/space without scanning or copying the source; nested
-views are created on access and retain the same mapper. All actual-container
-writes, including nested writes through get/typed views/Pointer, throw
-UnsupportedOperationException. Absent writes retain their missing/null errors.
-`deepCopy` creates an independent mutable tree; `toJavaValue` exports an
-independent snapshot. Conversion and serialization reuse configured Provider
-binding and may allocate independently of wrapping.
+Factory initializers, `deepCopy` and `toJavaValue` recursively copy containers.
+Copy depth uses the owning mapper's maxDepth, or the default for unbound nodes;
+cycles and excess depth fail with LIMIT without an identity table or graph pre-scan.
+Shared acyclic children are copied independently. Structural numbers accept exactly
+Byte/Short/Integer/Long/Float/Double/BigInteger/BigDecimal. Other Number classes or
+POJOs require configured binding before structural copying. `JsonValue.of(existingNode)`
+retains node identity. Binding results are copied because native handlers may return
+shared containers. Synchronous native binding borrows the built-in backing graph;
+internal transparent proxies reuse their existing neutral node. Other custom
+collection nodes use ordinary JDK views instead of a whole-tree snapshot.
 
-Borrowed sources must be acyclic String-keyed Maps, Lists and the structural
-scalars above, including null. Other Collections, Java arrays, JsonValue nodes
-and POJOs require structural factories or `toTree` first. Wrapping is not graph
-validation: unsupported leaves fail when exposed as views, and unvisited data
-is not checked. External changes are observable; callers must keep the entire
-source stable during access, binding, export and copying. Views add no
-synchronization or snapshot consistency. Cached child views still point to the
-original child storage after external ancestor replacement.
+`wrap(Map/List)` constructs an O(1) recursively read-only borrowed collection view.
+Nested containers are wrapped lazily through raw get, node, entrySet, values, iterators,
+toArray and subList. JDK unmodifiable delegates reject all mutation paths and mutation
+callbacks. Source changes remain observable. Sources must contain String-keyed Map,
+List and structural scalars, be stable during use and acyclic for JSON processing.
+Unsupported leaves fail on exposure; wrapping does not validate the entire graph.
+Copies/exports are independent and mutable. Cached child views retain their original
+container after ancestor replacement; no view adds synchronization.
 
-Missing and JSON null are distinct non-null views; inspect `isMissing/isNull`,
-not singleton identity. Missing export fails. RFC 6901 pointers support escaped
-`/` and `~`; readable array indices use canonical decimal notation.
-`getObject/getArray` accept names or indices and keep missing/null locations
-chainable without creating data. Actual shape mismatches fail; absent views
-cannot be mutated. `asObject/asArray` require an actual matching container.
+Node scalar defaults apply only to missing/null input. Present conversions use the
+configured Provider and propagate failures. Static structural nodes have no mapper
+and require an explicit mapper for present-value conversion; there is no global fallback.
+Nested node views preserve destination mapper and path. Copies restart at the root.
+Paths retain segments, never ancestor data; RFC 6901 pointers traverse storage in O(d)
+and create only the final node (plus index metadata for mixed paths).
 
-Scalar defaults apply only to missing/null input: primitive methods use zero or
-false, reference methods use null, and explicit defaults are available. Present
-values use configured Provider conversion and propagate failures. Static
-structural factories have no mapper; present-value conversion requires an
-explicit mapper or a mapper-created/bound tree. There is no global fallback.
-Nested views and deep copies preserve mapper configuration; copies start at the
-root, while inserted data uses its destination configuration and location.
+`requirePresent`, `requireNonNull` and predicate `require` return the current node
+on success. Exception factories receive immutable JsonFailure and run only on failure.
+Default failures use VALIDATION; Provider binding paths are prefixed with the node path.
+Map/List equals/hashCode are structural; mutable collections are not stable hash keys.
+Large documents should use cursors/events rather than materializing entire trees.
 
-Access paths belong to views, not backing data. They retain immutable path
-segments rather than ancestor nodes; strings, pointers and failures are rendered
-on demand. Foreign absent views snapshot public pointer/display locations without
-retaining the source node. A compiled Pointer traverses the JDK tree in O(d),
-creating only the final view; mixed array paths may need O(d) index metadata.
-Cached views continue to refer to their original container after ancestor replacement.
+## Deprecated source migration module
 
-`requirePresent`, `requireNonNull` and predicate `require` return the current
-view on success. Lazy exception factories receive immutable `JsonFailure`;
-their exception instances and predicate failures propagate unchanged. Default
-assertion failures have VALIDATION kind. Failures expose kind, reason, message,
-RFC 6901 pointer, display path and original cause. Provider paths are extracted
-from structured native errors and prefixed with the access path.
+`json-facade-compat-fastjson` depends only on the API at runtime. Its deprecated
+`org.jetlinks.json.compat.fastjson.JSON/JSONObject/JSONArray` classes provide
+common parse/write/DTO, constructor, scalar-getter and Map/List operations. Replace
+imports first; the classes are directly assignable to JsonObject/JsonArray. They do
+not occupy `com.alibaba.fastjson` and promise no third-party binary compatibility.
 
-Owned trees are mutable and not thread-safe; borrowed views do not freeze their
-source or make concurrent source mutation safe. There is no public field iterator,
-array remove/insert/clear API or structural node equality contract. Exporting a
-Map/List snapshot copies data; large traversal should use cursors or events.
+Default static helpers/constructors use Json.global; explicit-mapper roots support
+multiple configurations. Map/List constructors share caller storage. Nested get,
+iteration and stream lazily expose legacy container views over the same storage;
+repeated wrappers have no identity guarantee unless an already-compatible object was
+inserted. Mutations retain references and return the original previous value without
+allocating a compatibility view. deepCopy/toJavaValue remain explicit snapshots.
+Serialization borrows the existing neutral storage rather than walking compatibility
+getters to create more wrappers. Native binding and syntax stay with the selected Provider; no parser, reflective DTO
+binder, global native registry or JSON string roundtrip is added. Generic DTO/JDK
+binding uses JsonType; arbitrary nested declarations of the deprecated classes have
+no cross-provider binding guarantee. Prefer the neutral interfaces for DTO properties.
+
+JSONPath, old TypeReference, Feature/filter registries, fastjson annotations and
+permissive coercion emulation are not supplied. Those call sites must migrate before
+removing the last old fastjson dependency. The default class-name discovery prohibition
+continues to apply. @Deprecated signals migration, not a runtime restriction.
 
 ## Default, named and Spring mappers
 
@@ -471,10 +490,10 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 329 tests with no failures, errors or skips.
+Java 17.0.18 and 21.0.10 each pass 337 tests with no failures, errors or skips.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
-module's 80% branch-coverage gate pass. Aggregate branch coverage is 1390/1481
-(93.86%); fastjson2 covers 89/90 branches (98.89%). Tests cover all three Providers, configured
+module's 80% branch-coverage gate pass. Aggregate branch coverage is 1424/1523
+(93.50%); fastjson2 covers 97/98 branches (98.98%). Tests cover all three Providers, configured
 extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
 ownership. The [CI matrix](../.github/workflows/verify.yml) also runs small-chunk,
 closed-owner, tree-retention and pooled-buffer regressions.
@@ -578,16 +597,47 @@ reusing prepared options; they do not establish zero framework overhead for
 arbitrary handlers, trees or workloads.
 
 Borrowed-tree JMH uses Java 21, a 512 MiB heap, GC profiling, two forks, three
-300 ms warmups and four 300 ms measurements. Across both Providers and one/1000
-nested object elements, root `wrap(Map)` allocates 32 B/op (about 5–10 ns/op),
-independent of source size in this fixture. Bounded copying allocates 448 B/op
-for one element and about 260258 B/op for 1000, unchanged from the same fixture
-before the depth guard; 1000-element copies take about 24.9–26.0 µs/op.
-Borrowed and copied fused access both
-allocate 88 B/op on the measured paths. A before/after depth-4 mixed-path check
-keeps chain/Pointer allocation at 224/88 B/op without observed timing regression.
-These results support constant-cost root wrapping, not allocation-free access
-or conversion; Provider binding, export and explicit deep copies have their own costs.
+300 ms warmups and four 300 ms measurements. Across both Jackson Providers and
+one/1000 nested object elements, root `wrap(Map)` allocates 104 B/op (11.6–15.3 ns/op)
+and `wrap(List)` allocates 96 B/op (12.5–12.6 ns/op), independent of source size.
+The fixed JDK delegates protect collection views, iterators and nested access.
+Copying a Map root allocates 456 B/op for one element and about 260337 B/op for
+1000; List roots allocate 272 and about 260081 B/op. The 1000-element copies take
+about 23.0–26.1 µs/op. Borrowed/copied fused access both allocate 88 B/op in this
+fixture. These are ranges of measured means, not confidence bounds or universal
+limits. Root wrapping is constant-cost; node access, binding, export and explicit
+deep copies still have costs.
+At depth four in the mixed object/array fixture, chained node access measures
+32.4–33.7 ns/op and 248 B/op; a precompiled Pointer measures about 15.8 ns/op
+and 88 B/op. This comparison returns the selected node without scalar conversion.
+
+Collection JMH uses the same Java 21 settings with three Providers and one/1000
+object rows. Ordinary JDK/neutral get, nested get and replacement put measure
+about 1–4 ns/op without per-operation allocation; compatibility scalar get and
+replacement put also allocate nothing. Reading a nested array then its object
+through compatibility getters costs 136 B/op and about 14–16 ns/op. Repeated
+legacy views are deliberately not cached. `node(...).asInt()` costs about 32–42
+ns/op and 336–592 B/op here because it preserves node diagnostics and configured
+Provider conversion; ordinary get has a different contract.
+
+The roundtrip baseline below is the same configured facade mapper using ordinary
+JDK Object binding, not a direct native-engine baseline. Input construction is
+outside measurement; each operation parses and writes UTF-8 bytes for 1000 rows.
+Time is mean ± JMH 99.9% error:
+
+| Provider | JDK containers µs/op | Deprecated containers µs/op | JDK / deprecated B/op |
+| --- | ---: | ---: | ---: |
+| Jackson 2 | 122.3 ± 20.3 | 125.3 ± 4.7 | 483516 / 483808 |
+| Jackson 3 | 112.9 ± 3.9 | 114.3 ± 2.7 | 451336 / 451586 |
+| fastjson2 | 121.5 ± 59.2 | 116.8 ± 17.5 | 360331 / 360451 |
+
+Transparent storage delegation removes about 264 kB/op of serialization wrappers
+from the earlier compatibility implementation in this fixture; the remaining
+allocation difference is about 120–292 B/op. Timing intervals overlap, especially
+for fastjson2, so these results do not establish zero overhead or a universal speedup.
+Neutral `readTree` roundtrips allocate about 252 kB/op more than JDK binding for
+1000 rows because tree creation explicitly copies native binding results; use
+ordinary DTO/Map/List binding when an independent editable tree is unnecessary.
 
 The synchronous array benchmark uses the same mapper configuration, input,
 binding type, count/checksum and array/EOF checks for native, cursor and iterator

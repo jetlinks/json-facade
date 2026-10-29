@@ -1,11 +1,18 @@
 package org.jetlinks.json.fastjson2;
 
 import java.lang.reflect.Type;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.util.function.Function;
 import com.alibaba.fastjson2.JSONReader;
 import com.alibaba.fastjson2.JSONWriter;
 import com.alibaba.fastjson2.modules.ObjectWriterModule;
 import com.alibaba.fastjson2.reader.ObjectReader;
+import com.alibaba.fastjson2.codec.FieldInfo;
+import com.alibaba.fastjson2.modules.ObjectReaderModule;
+import com.alibaba.fastjson2.modules.ObjectReaderAnnotationProcessor;
 import com.alibaba.fastjson2.writer.ObjectWriter;
 import org.jetlinks.json.JsonArray;
 import org.jetlinks.json.JsonException;
@@ -139,6 +146,46 @@ public final class Fastjson2Provider implements JsonProvider {
         builder.reader().getProvider().register(JsonValue.class, treeReader(binding, Function.identity(), true));
         builder.reader().getProvider().register(JsonObject.class, treeReader(binding, JsonValues::objectView, false));
         builder.reader().getProvider().register(JsonArray.class, treeReader(binding, JsonValues::arrayView, false));
+        builder.reader().getProvider().register(JsonValue.class, treeReader(binding, Function.identity(), true), true);
+        builder.reader().getProvider().register(JsonObject.class, treeReader(binding, JsonValues::objectView, false), true);
+        builder.reader().getProvider().register(JsonArray.class, treeReader(binding, JsonValues::arrayView, false), true);
+        // 原生属性读取器会优先走 Map/List 专用分支；通过公开元数据 SPI 指向已注册的树读取器。
+        builder.reader().getProvider().register(new ObjectReaderModule() {
+            @Override
+            @SuppressWarnings("rawtypes")
+            public ObjectReaderAnnotationProcessor getAnnotationProcessor() {
+                return new ObjectReaderAnnotationProcessor() {
+                    private void configure(FieldInfo info, Class<?> type) {
+                        if (info.readUsing == null && (type == JsonObject.class || type == JsonArray.class)) {
+                            info.readUsing = TreeFieldReader.class;
+                        }
+                    }
+
+                    @Override
+                    public void getFieldInfo(FieldInfo info, Class owner, Field field) {
+                        configure(info, field.getType());
+                    }
+
+                    @Override
+                    public void getFieldInfo(FieldInfo info, Class owner, Method method) {
+                        configure(info, method.getParameterCount() == 1
+                                ? method.getParameterTypes()[0] : method.getReturnType());
+                    }
+
+                    @Override
+                    public void getFieldInfo(FieldInfo info, Class owner, Constructor constructor,
+                                             int index, Parameter parameter) {
+                        configure(info, parameter.getType());
+                    }
+
+                    @Override
+                    public void getFieldInfo(FieldInfo info, Class owner, Method method,
+                                             int index, Parameter parameter) {
+                        configure(info, parameter.getType());
+                    }
+                };
+            }
+        });
         ObjectWriter<Object> treeWriter = (output, value, name, type, features) ->
                 output.writeAny(JsonValues.bindingValue(value));
         builder.writer().getProvider().register(new ObjectWriterModule() {
@@ -164,5 +211,17 @@ public final class Fastjson2Provider implements JsonProvider {
             }
 
         };
+    }
+
+    /**
+     * 原生字段 SPI 的无状态入口；复用当前解析上下文的树读取器，不保存全局配置或 DTO 字段。
+     * 由 fastjson2 的公开 readUsing 扩展构造，仍执行相同引用限制和所属 mapper 绑定。
+     * @since 1.0.0
+     */
+    public static final class TreeFieldReader implements ObjectReader<Object> {
+        @Override
+        public Object readObject(JSONReader input, Type type, Object name, long features) {
+            return input.getContext().getObjectReader(type).readObject(input, type, name, features);
+        }
     }
 }

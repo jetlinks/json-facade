@@ -63,9 +63,10 @@ class JsonApiTest {
 
     @Test
     void treesDistinguishMissingNullAndIsolateCopies() {
-        JsonValue tree = JsonValue.object().put("a/b", JsonValue.array().add(null).add(2));
-        assertTrue(tree.get("a/b").get(0).isNull());
-        assertTrue(tree.get("missing").isMissing());
+        JsonObject tree = JsonValue.object();
+        tree.put("a/b", java.util.Arrays.asList(null, 2));
+        assertTrue(tree.node("a/b").node(0).isNull());
+        assertTrue(tree.node("missing").isMissing());
         assertFalse(tree.isNull());
         assertFalse(JsonValue.NULL.isMissing());
         assertSame(JsonValue.NULL, JsonValue.of(null));
@@ -73,21 +74,22 @@ class JsonApiTest {
         assertSame(tree, JsonValue.of(tree));
         assertEquals(2, tree.at(JsonPointer.of("/a~1b/1")).toJavaValue());
         assertSame(tree, tree.at(JsonPointer.of("")));
-        JsonValue copy = tree.deepCopy();
-        copy.get("a/b").set(1, 3).add("tail");
-        assertEquals(2, tree.get("a/b").get(1).toJavaValue());
-        assertEquals(3, copy.get("a/b").size());
+        JsonObject copy = tree.deepCopy();
+        copy.getArray("a/b").set(1, 3);
+        copy.getArray("a/b").add("tail");
+        assertEquals(2, tree.node("a/b").node(1).toJavaValue());
+        assertEquals(3, copy.node("a/b").size());
         copy.remove("a/b");
         assertEquals(0, copy.size());
         assertEquals(0, JsonValue.of("scalar").size());
-        assertTrue(tree.get(-1).isMissing());
-        assertTrue(tree.get("a/b").get(3).isMissing());
+        assertTrue(tree.node(-1).isMissing());
+        assertTrue(tree.node("a/b").node(3).isMissing());
         for (String path : List.of("/a~1b/01", "/a~1b/-", "/a~1b/999999999999999999999", "/absent/x")) {
             assertTrue(tree.at(JsonPointer.of(path)).isMissing(), path);
         }
         assertThrows(IllegalStateException.class, JsonValue.MISSING::toJavaValue);
-        assertThrows(JsonException.class, () -> JsonValue.NULL.add(1));
-        assertThrows(JsonException.class, () -> JsonValue.of(1).put("x", 1));
+        assertThrows(JsonException.class, () -> JsonValue.NULL.asArray());
+        assertThrows(JsonException.class, () -> JsonValue.of(1).asObject());
         assertEquals(List.of("~", "/", ""), JsonPointer.of("/~0/~1/").segments());
         for (String path : List.of("x", "/~", "/~2")) {
             assertThrows(IllegalArgumentException.class, () -> JsonPointer.of(path));
