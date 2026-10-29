@@ -387,11 +387,16 @@ wrap 创建只分配根视图，不遍历数据；子节点按访问包装，转
 ### 逐步迁移 fastjson 调用
 
 可选依赖 `org.jetlinks:json-facade-compat-fastjson`，运行时仅依赖中立 API。
-将 import 改为 `org.jetlinks.json.compat.fastjson.JSON/JSONObject/JSONArray`，
+提供原包名 `com.alibaba.fastjson.JSON/JSONObject/JSONArray`，已覆盖的用法保留原 import 和调用，
 再逐步将声明类型改为 JsonObject/JsonArray、静态操作改为 JsonMapper。
+先移除或排除 `com.alibaba:fastjson` 及其他包含这些同名类的依赖，再引入兼容模块；不可同时放入 classpath。
+独立的 `com.alibaba.fastjson2:fastjson2` 引擎使用不同包名，可以作为 Provider 共存。
 这些旧名类均已弃用；支持常用构造、标量 getter、Map/List 操作与解析输出。
 
 ```java
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
+
 // 迁移期旧名容器可直接传给中立接口；不依赖 fastjson 引擎。
 JSONObject legacy = JSON.parseObject(mapper, "{\"items\":[{\"count\":1}]}");
 JsonObject object = legacy;
@@ -407,7 +412,7 @@ Map/List 构造器共享源存储，嵌套读取按需提供兼容视图；修�
 同一存储的重复视图不承诺对象身份。JSONPath、fastjson 注解、Feature、过滤器与旧
 TypeReference 不在兼容范围；泛型使用 JsonType，DTO 属性优先使用中立接口。
 任意 DTO 或泛型中声明弃用容器类型不保证跨 Provider 绑定；旧名适配放在 JSON 的根解析入口。
-这不是第三方二进制兼容包，不能直接替换外部依赖的 com.alibaba.fastjson 类。
+原包名仅承接已覆盖的常用源码 API，不保证完整 fastjson API、继承关系或第三方已编译代码的二进制兼容。
 
 ### 访问、转换与位置
 

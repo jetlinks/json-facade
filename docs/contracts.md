@@ -11,11 +11,12 @@ retains path-aware missing/null access. Insertions retain references; independen
 copying remains explicit in factories, `deepCopy` and `toJavaValue`. Typed container
 access returns Java null for missing/null. Borrowed views remain recursively
 read-only through collection methods and views. An optional deprecated migration
-module provides self-owned `JSON`/`JSONObject`/`JSONArray` names without a fastjson
+module provides `com.alibaba.fastjson.JSON/JSONObject/JSONArray` without a fastjson
 dependency; engine binding remains with `JsonMapper`. Compatibility reads lazily
 adapt nested containers, while mutations return the original previous value.
-This is source migration within the facade's own package, not binary compatibility
-with fastjson. Native annotations, Feature flags and deprecated container types
+Existing imports remain valid for the supported source API. The module replaces
+dependencies providing the same fastjson 1.x classes; full binary compatibility
+is not guaranteed. Native annotations, Feature flags and deprecated container types
 nested in arbitrary DTO/generic declarations are outside its binding contract.
 
 ## Fastjson2 support
@@ -315,10 +316,13 @@ Large documents should use cursors/events rather than materializing entire trees
 ## Deprecated source migration module
 
 `json-facade-compat-fastjson` depends only on the API at runtime. Its deprecated
-`org.jetlinks.json.compat.fastjson.JSON/JSONObject/JSONArray` classes provide
-common parse/write/DTO, constructor, scalar-getter and Map/List operations. Replace
-imports first; the classes are directly assignable to JsonObject/JsonArray. They do
-not occupy `com.alibaba.fastjson` and promise no third-party binary compatibility.
+`com.alibaba.fastjson.JSON/JSONObject/JSONArray` classes provide common
+parse/write/DTO, constructor, scalar-getter and Map/List operations. Existing imports
+and supported calls stay unchanged; the classes are directly assignable to
+JsonObject/JsonArray. Replace or exclude `com.alibaba:fastjson` and any other jar
+providing the same classes before adding this module. The native fastjson2 Provider
+uses a different package and can coexist. Full third-party binary compatibility
+is not promised; unsupported API usages still need migration.
 
 Default static helpers/constructors use Json.global; explicit-mapper roots support
 multiple configurations. Map/List constructors share caller storage. Nested get,

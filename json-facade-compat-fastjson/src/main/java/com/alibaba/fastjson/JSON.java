@@ -1,4 +1,4 @@
-package org.jetlinks.json.compat.fastjson;
+package com.alibaba.fastjson;
 
 import java.util.List;
 import java.util.Map;
@@ -8,7 +8,7 @@ import org.jetlinks.json.JsonMapper;
 import org.jetlinks.json.JsonType;
 
 /**
- * 手动 JSON 操作的临时旧名入口，全部绑定交给 JsonMapper。
+ * fastjson 1.x 原包名的源码迁移入口，全部绑定交给 JsonMapper；须移除原 fastjson 依赖。
  * 默认入口使用 Json.global；带 mapper 的重载适合多配置应用。
  * @deprecated 新代码直接使用 JsonMapper；只承接常用源码调用，不实现旧解析器或原生配置。
  * @since 1.0.0

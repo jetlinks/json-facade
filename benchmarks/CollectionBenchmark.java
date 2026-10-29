@@ -1,11 +1,11 @@
 package org.jetlinks.json;
 
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import org.jetlinks.json.compat.fastjson.JSON;
-import org.jetlinks.json.compat.fastjson.JSONObject;
 import org.jetlinks.json.fastjson2.Fastjson2Provider;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;

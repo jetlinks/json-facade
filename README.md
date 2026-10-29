@@ -14,7 +14,7 @@ Documentation: [完整中文使用手册](docs/user-guide.md) · [Public contrac
 | `json-facade-jackson2` | Jackson 2 Provider | API, Jackson 2 |
 | `json-facade-jackson3` | Jackson 3 Provider | API, Jackson 3 |
 | `json-facade-fastjson2` | Synchronous fastjson2 binding with explicit native limits | API, fastjson2 |
-| `json-facade-compat-fastjson` | Deprecated source migration JSON/JSONObject/JSONArray names | API only |
+| `json-facade-compat-fastjson` | Deprecated `com.alibaba.fastjson` source migration API; replaces the old fastjson dependency | API only |
 | `json-facade-reactor` | Reactive byte[] / ByteBuffer operations | API, reactor-core |
 | `json-facade-netty` | Optional retained ByteBuf input and allocated segmented output | Reactor adapter, Netty buffer/common |
 | `json-facade-spring` | Spring 6 / Boot 3 default-mapper bridge and explicit DataBuffer streams | Jackson 2 Provider, Spring Context; Boot/Reactor optional |

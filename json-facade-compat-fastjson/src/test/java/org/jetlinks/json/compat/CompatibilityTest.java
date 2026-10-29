@@ -1,5 +1,8 @@
-package org.jetlinks.json.compat.fastjson;
+package org.jetlinks.json.compat;
 
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;

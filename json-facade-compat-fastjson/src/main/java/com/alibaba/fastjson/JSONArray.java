@@ -1,4 +1,4 @@
-package org.jetlinks.json.compat.fastjson;
+package com.alibaba.fastjson;
 
 import java.util.AbstractList;
 import java.util.ArrayList;
@@ -15,7 +15,8 @@ import org.jetlinks.json.internal.JsonValues;
  * 旧 JSONArray 的源码迁移容器，保留插入引用；修改方法返回旧值原引用。
  * List 构造器共享存储；嵌套 get、迭代和 stream 返回同一数据上的兼容视图。
  * 不提供并发同步。
- * @deprecated 新代码使用 JsonArray 与 JsonMapper；不兼容 fastjson Feature 和二进制包名。
+ * 与原 fastjson 同名类互斥，只兼容已提供的常用源码 API。
+ * @deprecated 新代码使用 JsonArray 与 JsonMapper；不兼容 fastjson Feature 或完整二进制 API。
  * @since 1.0.0
  */
 @Deprecated(since = "1.0", forRemoval = false)

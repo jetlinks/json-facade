@@ -1,4 +1,4 @@
-package org.jetlinks.json.compat.fastjson;
+package com.alibaba.fastjson;
 
 import java.util.AbstractMap;
 import java.util.AbstractSet;
@@ -17,7 +17,8 @@ import org.jetlinks.json.internal.JsonValues;
 /**
  * 旧 JSONObject 的源码迁移容器；修改方法返回旧值原引用，遵循中立集合契约。
  * Map 构造器共享传入存储，嵌套读取按需提供兼容视图；不提供并发同步。
- * @deprecated 新代码使用 JsonObject 与 JsonMapper；不兼容 fastjson 注解、Feature 和二进制包名。
+ * 与原 fastjson 同名类互斥，只兼容已提供的常用源码 API。
+ * @deprecated 新代码使用 JsonObject 与 JsonMapper；不兼容 fastjson 注解、Feature 或完整二进制 API。
  * @since 1.0.0
  */
 @Deprecated(since = "1.0", forRemoval = false)
