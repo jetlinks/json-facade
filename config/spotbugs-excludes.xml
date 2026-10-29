@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!-- Throwable identity is the public cause contract, matching Throwable.getCause().
+         Copying it would lose native/custom exception identity. Only this field is exempted. -->
+    <Match>
+        <Class name="org.jetlinks.json.JsonFailure"/>
+        <Field name="cause"/>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+    <!-- JsonMapper explicitly guarantees immutable configured, thread-safe shared instances.
+         This accessor publishes that configured instance after write-once assembly. -->
+    <Match>
+        <Class name="org.jetlinks.json.internal.JsonTreeBinding"/>
+        <Method name="mapper" params="" returns="org.jetlinks.json.JsonMapper"/>
+        <Bug pattern="EI_EXPOSE_REP"/>
+    </Match>
+    <!-- This negative contract fixture intentionally creates a self-containing List
+         to verify bounded rejection. Production collection checks stay enabled. -->
+    <Match>
+        <Class name="org.jetlinks.json.tck.JsonTreeContract"/>
+        <Method name="structuralCopiesBoundCyclesAndDeepAcyclicInputs"/>
+        <Bug pattern="IL_CONTAINER_ADDED_TO_ITSELF"/>
+    </Match>
+    <!-- The build-only native callback borrows mutable contexts intentionally;
+         published facade mappers never expose those contexts. -->
+    <Match>
+        <Class name="org.jetlinks.json.fastjson2.Fastjson2Builder"/>
+        <Method name="reader" params="" returns="com.alibaba.fastjson2.JSONReader$Context"/>
+        <Bug pattern="EI_EXPOSE_REP"/>
+    </Match>
+    <Match>
+        <Class name="org.jetlinks.json.fastjson2.Fastjson2Builder"/>
+        <Method name="writer" params="" returns="com.alibaba.fastjson2.JSONWriter$Context"/>
+        <Bug pattern="EI_EXPOSE_REP"/>
+    </Match>
+</FindBugsFilter>
