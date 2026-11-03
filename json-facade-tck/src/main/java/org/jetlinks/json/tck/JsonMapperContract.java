@@ -51,6 +51,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public abstract class JsonMapperContract extends JsonOperationContract {
     private static final JsonType<List<Map<String, BigDecimal>>> DECIMAL_ROWS = new JsonType<>() { };
+    private static final JsonType<Map<String, List<BigDecimal>>> DECIMAL_GROUP = new JsonType<>() { };
+    private static final JsonType<List<Label>> LABELS = new JsonType<>() { };
 
     protected abstract JsonMapper mapper(JsonOptions options, JsonModule... modules);
 
@@ -123,6 +125,95 @@ public abstract class JsonMapperContract extends JsonOperationContract {
         assertEquals(Map.of("x", 3), json.read("{\"x\":3}", JsonType.mapOf(JsonType.of(String.class), JsonType.of(Integer.class))));
         assertEquals(7, json.convert(Map.of("value", 7), JsonType.of(Item.class)).value);
         assertEquals(4, json.read("{\"value\":4}".getBytes(StandardCharsets.UTF_8), Item.class).value);
+    }
+
+    @Test
+    void collectionClassReadsBindDtosAcrossAllInputFormsWithoutClosingIo() throws IOException {
+        JsonMapper json = mapper();
+        String array = "[{\"value\":\"中文😀\"}]";
+        String object = "{\"first\":{\"value\":\"中文😀\"}}";
+        byte[] arrayBytes = array.getBytes(StandardCharsets.UTF_8);
+        byte[] objectBytes = object.getBytes(StandardCharsets.UTF_8);
+        List<Label> list = List.of(new Label("中文😀"));
+        Map<String, Label> map = Map.of("first", new Label("中文😀"));
+        assertEquals(list, json.readAsList(array, Label.class));
+        assertEquals(list, json.readAsList(arrayBytes, Label.class));
+        assertEquals(map, json.readAsMap(object, Label.class));
+        assertEquals(map, json.readAsMap(objectBytes, Label.class));
+        try (TrackedInput arrayInput = new TrackedInput(arrayBytes);
+             TrackedInput objectInput = new TrackedInput(objectBytes);
+             TrackedReader arrayReader = new TrackedReader(array);
+             TrackedReader objectReader = new TrackedReader(object)) {
+            assertEquals(list, json.readAsList(arrayInput, Label.class));
+            assertEquals(list, json.readAsList(arrayReader, Label.class));
+            assertEquals(map, json.readAsMap(objectInput, Label.class));
+            assertEquals(map, json.readAsMap(objectReader, Label.class));
+            assertFalse(arrayInput.closed);
+            assertFalse(objectInput.closed);
+            assertFalse(arrayReader.closed);
+            assertFalse(objectReader.closed);
+        }
+    }
+
+    @Test
+    void collectionGenericReadsPreserveNestedTypesAcrossAllInputForms() throws IOException {
+        JsonMapper json = mapper();
+        JsonType<Map<String, List<BigDecimal>>> element = DECIMAL_GROUP;
+        JsonType<List<Label>> value = LABELS;
+        String array = "[{\"number\":[12345678901234567890.123456789]}]";
+        String object = "{\"group\":[{\"value\":\"中文😀\"}]}";
+        byte[] arrayBytes = array.getBytes(StandardCharsets.UTF_8);
+        byte[] objectBytes = object.getBytes(StandardCharsets.UTF_8);
+        List<Map<String, List<BigDecimal>>> list =
+                List.of(Map.of("number", List.of(new BigDecimal("12345678901234567890.123456789"))));
+        Map<String, List<Label>> map = Map.of("group", List.of(new Label("中文😀")));
+        assertEquals(list, json.readAsList(array, element));
+        assertEquals(list, json.readAsList(arrayBytes, element));
+        assertEquals(map, json.readAsMap(object, value));
+        assertEquals(map, json.readAsMap(objectBytes, value));
+        try (TrackedInput arrayInput = new TrackedInput(arrayBytes);
+             TrackedInput objectInput = new TrackedInput(objectBytes);
+             TrackedReader arrayReader = new TrackedReader(array);
+             TrackedReader objectReader = new TrackedReader(object)) {
+            assertEquals(list, json.readAsList(arrayInput, element));
+            assertEquals(list, json.readAsList(arrayReader, element));
+            assertEquals(map, json.readAsMap(objectInput, value));
+            assertEquals(map, json.readAsMap(objectReader, value));
+            assertFalse(arrayInput.closed);
+            assertFalse(objectInput.closed);
+            assertFalse(arrayReader.closed);
+            assertFalse(objectReader.closed);
+        }
+    }
+
+    @Test
+    void collectionReadsRetainAdaptersNullAndCompleteRootSemantics() throws IOException {
+        JsonMapper json = mapper(JsonOptions.DEFAULT, new LabelsModule());
+        JsonType<Label> label = JsonType.of(Label.class);
+        assertEquals(List.of(new Label("x")), json.readAsList("[\"label:x\"]", Label.class));
+        assertEquals(Map.of("first", new Label("x")), json.readAsMap("{\"first\":\"label:x\"}", label));
+        assertNull(json.readAsList("null", Label.class));
+        assertNull(json.readAsList("null", label));
+        assertNull(json.readAsMap("null", Label.class));
+        assertNull(json.readAsMap("null", label));
+        assertEquals(List.of(), json.readAsList("[]", Label.class));
+        assertEquals(Map.of(), json.readAsMap("{}", label));
+        for (String invalid : List.of("", " ", "[", "[] []")) {
+            assertThrows(JsonException.class, () -> json.readAsList(invalid, Label.class));
+        }
+        for (String invalid : List.of("", " ", "{", "{} {}")) {
+            assertThrows(JsonException.class, () -> json.readAsMap(invalid, label));
+        }
+        try (TrackedInput input = new TrackedInput("[] []".getBytes(StandardCharsets.UTF_8));
+             TrackedReader reader = new TrackedReader("{} {}")) {
+            assertThrows(JsonException.class, () -> json.readAsList(input, label));
+            assertThrows(JsonException.class, () -> json.readAsMap(reader, Label.class));
+            assertFalse(input.closed);
+            assertFalse(reader.closed);
+        }
+        JsonMapper strict = mapper(JsonOptions.DEFAULT.withFailUnknownProperties(true));
+        assertThrows(JsonException.class, () -> strict.readAsList("[{\"value\":1,\"extra\":2}]", Item.class));
+        assertThrows(JsonException.class, () -> strict.readAsMap("{\"first\":{\"value\":1,\"extra\":2}}", JsonType.of(Item.class)));
     }
 
     @Test
@@ -1103,6 +1194,20 @@ public abstract class JsonMapperContract extends JsonOperationContract {
         @Override
         public int read() throws IOException {
             throw new IOException("broken source");
+        }
+    }
+
+    private static final class TrackedReader extends StringReader {
+        private boolean closed;
+
+        private TrackedReader(String text) {
+            super(text);
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+            super.close();
         }
     }
 

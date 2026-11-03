@@ -5,6 +5,8 @@ import java.io.OutputStream;
 import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 读取 JSON、生成 JSON，以及在 Java 对象和 JSON 树之间转换的入口。
@@ -438,6 +440,175 @@ public interface JsonMapper {
      */
     default <T> T read(byte[] input, Class<T> type) {
         return read(input, JsonType.of(type));
+    }
+
+    /**
+     * 将 JSON 数组直接绑定为指定元素类型的 List，适合配置列表或批量接口结果。
+     * <pre>{@code
+     * record Item(String id) {}
+     * List<Item> items = mapper.readAsList("[{\"id\":\"dev-1\"}]", Item.class);
+     * }</pre>
+     * 复用当前 Provider 的绑定配置；结果整体驻留内存，JSON null 返回 Java null。
+     * 泛型元素使用 JsonType 重载；大数组逐条消费用 {@link #iterateArray(InputStream, Class)}。
+     *
+     * @since 1.0.0
+     * @see #readAsList(String, JsonType)
+     */
+    default <T> List<T> readAsList(String input, Class<T> elementType) {
+        return readAsList(input, JsonType.of(elementType));
+    }
+
+    /**
+     * 将 JSON 数组绑定为 List，参数描述每个元素的完整泛型。
+     * <pre>{@code
+     * List<Map<String, Integer>> rows = mapper.readAsList("[{\"count\":3}]",
+     *     new JsonType<Map<String, Integer>>() {});
+     * }</pre>
+     * 直接组合 List 类型并调用 read，沿用完整单根校验、异常和 Provider 配置。
+     * JSON null 返回 null，空数组返回空 List；高频读取可复用完整 JsonType 调用 read。
+     *
+     * @since 1.0.0
+     * @see #read(String, JsonType)
+     */
+    default <T> List<T> readAsList(String input, JsonType<T> elementType) {
+        return read(input, JsonType.listOf(elementType));
+    }
+
+    /**
+     * 从完整 UTF-8 消息体读取 DTO 或标量列表，结果整体驻留内存。
+     * @since 1.0.0
+     * @see #readAsList(String, Class)
+     */
+    default <T> List<T> readAsList(byte[] input, Class<T> elementType) {
+        return readAsList(input, JsonType.of(elementType));
+    }
+
+    /**
+     * 从完整 UTF-8 消息体读取列表，参数指定元素的完整泛型。
+     * @since 1.0.0
+     * @see #readAsList(String, JsonType)
+     */
+    default <T> List<T> readAsList(byte[] input, JsonType<T> elementType) {
+        return read(input, JsonType.listOf(elementType));
+    }
+
+    /**
+     * 从 UTF-8 输入流读取完整列表；不关闭调用方输入流。
+     * @since 1.0.0
+     * @see #readAsList(String, Class)
+     */
+    default <T> List<T> readAsList(InputStream input, Class<T> elementType) {
+        return readAsList(input, JsonType.of(elementType));
+    }
+
+    /**
+     * 从 UTF-8 输入流读取泛型元素列表；结果整体驻留内存，不关闭输入流。
+     * @since 1.0.0
+     * @see #readAsList(String, JsonType)
+     */
+    default <T> List<T> readAsList(InputStream input, JsonType<T> elementType) {
+        return read(input, JsonType.listOf(elementType));
+    }
+
+    /**
+     * 从已有 Reader 读取完整列表；不关闭调用方 Reader。
+     * @since 1.0.0
+     * @see #readAsList(String, Class)
+     */
+    default <T> List<T> readAsList(Reader input, Class<T> elementType) {
+        return readAsList(input, JsonType.of(elementType));
+    }
+
+    /**
+     * 从已有 Reader 读取泛型元素列表；结果整体驻留内存，不关闭 Reader。
+     * @since 1.0.0
+     * @see #readAsList(String, JsonType)
+     */
+    default <T> List<T> readAsList(Reader input, JsonType<T> elementType) {
+        return read(input, JsonType.listOf(elementType));
+    }
+
+    /**
+     * 将 JSON 对象直接绑定为字符串键的 Map，适合按标识分组的 DTO 或配置。
+     * {@code Map<String, Integer> counts = mapper.readAsMap("{\"online\":3}", Integer.class);}
+     * 参数指定值类型；结果整体驻留内存，JSON null 返回 Java null。
+     * 需要动态字段访问时用 {@code mapper.readTree(json).asObject()}。
+     *
+     * @since 1.0.0
+     * @see #readAsMap(String, JsonType)
+     */
+    default <V> Map<String, V> readAsMap(String input, Class<V> valueType) {
+        return readAsMap(input, JsonType.of(valueType));
+    }
+
+    /**
+     * 将 JSON 对象绑定为字符串键的 Map，参数描述每个值的完整泛型。
+     * <pre>{@code
+     * Map<String, List<Integer>> groups = mapper.readAsMap("{\"group-a\":[1,2]}",
+     *     new JsonType<List<Integer>>() {});
+     * }</pre>
+     * 直接组合 Map 类型并调用 read，沿用完整单根校验、异常和 Provider 配置。
+     * JSON null 返回 null，空对象返回空 Map；其他键类型使用 JsonType.mapOf 调用 read。
+     *
+     * @since 1.0.0
+     * @see #read(String, JsonType)
+     */
+    default <V> Map<String, V> readAsMap(String input, JsonType<V> valueType) {
+        return read(input, JsonType.mapOf(JsonType.of(String.class), valueType));
+    }
+
+    /**
+     * 从完整 UTF-8 消息体读取字符串键的 Map，参数指定值类型。
+     * @since 1.0.0
+     * @see #readAsMap(String, Class)
+     */
+    default <V> Map<String, V> readAsMap(byte[] input, Class<V> valueType) {
+        return readAsMap(input, JsonType.of(valueType));
+    }
+
+    /**
+     * 从完整 UTF-8 消息体读取字符串键的 Map，参数指定值的完整泛型。
+     * @since 1.0.0
+     * @see #readAsMap(String, JsonType)
+     */
+    default <V> Map<String, V> readAsMap(byte[] input, JsonType<V> valueType) {
+        return read(input, JsonType.mapOf(JsonType.of(String.class), valueType));
+    }
+
+    /**
+     * 从 UTF-8 输入流读取字符串键的 Map；不关闭调用方输入流。
+     * @since 1.0.0
+     * @see #readAsMap(String, Class)
+     */
+    default <V> Map<String, V> readAsMap(InputStream input, Class<V> valueType) {
+        return readAsMap(input, JsonType.of(valueType));
+    }
+
+    /**
+     * 从 UTF-8 输入流读取泛型值 Map；结果整体驻留内存，不关闭输入流。
+     * @since 1.0.0
+     * @see #readAsMap(String, JsonType)
+     */
+    default <V> Map<String, V> readAsMap(InputStream input, JsonType<V> valueType) {
+        return read(input, JsonType.mapOf(JsonType.of(String.class), valueType));
+    }
+
+    /**
+     * 从已有 Reader 读取字符串键的 Map；不关闭调用方 Reader。
+     * @since 1.0.0
+     * @see #readAsMap(String, Class)
+     */
+    default <V> Map<String, V> readAsMap(Reader input, Class<V> valueType) {
+        return readAsMap(input, JsonType.of(valueType));
+    }
+
+    /**
+     * 从已有 Reader 读取泛型值 Map；结果整体驻留内存，不关闭 Reader。
+     * @since 1.0.0
+     * @see #readAsMap(String, JsonType)
+     */
+    default <V> Map<String, V> readAsMap(Reader input, JsonType<V> valueType) {
+        return read(input, JsonType.mapOf(JsonType.of(String.class), valueType));
     }
 
     /**

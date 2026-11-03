@@ -34,9 +34,19 @@ JsonMapper mapper = Json.builder().provider("jackson2").build();
 String json = mapper.write(java.util.Map.of("count", 3));
 var values = mapper.read("[{\"count\":3}]",
     new JsonType<java.util.List<java.util.Map<String, Integer>>>() { });
+java.util.List<Integer> counts = mapper.readAsList("[1,2]", Integer.class);
+java.util.Map<String, Integer> grouped = mapper.readAsMap("{\"online\":3}", Integer.class);
+java.util.Map<String, java.util.List<Integer>> batches = mapper.readAsMap(
+    "{\"batch-a\":[1,2]}", new JsonType<java.util.List<Integer>>() { });
 ```
 
 `JsonType.of`, `listOf` and `mapOf` also construct generic types. Explicit `provider(new Jackson2Provider())` avoids ServiceLoader when class loading must be controlled. With discovery, exactly one matching Provider is required. Multiple Providers without a selection, duplicate IDs or no candidates fail before use; parse errors never trigger fallback to another engine.
+
+`readAsList` takes the element type; `readAsMap` takes the value type and uses
+String keys. Both accept Class/JsonType with String, UTF-8 byte[], InputStream
+or Reader input, delegating directly to Provider binding. Results are fully
+materialized; JSON null returns Java null. For dynamic structures use
+`mapper.readTree(json).asArray()` / `.asObject()`.
 
 Built mappers are immutable and safe to share. Construct configuration before publishing the instance. Each reader, writer and incremental session has its own state. Supplied InputStream/Reader/OutputStream/Writer remain caller-owned.
 

@@ -104,6 +104,46 @@ class Fastjson2ProviderTest {
     }
 
     @Test
+    void collectionReadsBindDtosAndGenericValuesAcrossInputForms() {
+        JsonMapper json = mapper();
+        String array = "[{\"value\":1}]";
+        String object = "{\"first\":{\"value\":1}}";
+        List<Item> list = List.of(new Item(1));
+        Map<String, Item> map = Map.of("first", new Item(1));
+        assertEquals(list, json.readAsList(array, Item.class));
+        assertEquals(list, json.readAsList(array.getBytes(StandardCharsets.UTF_8), Item.class));
+        assertEquals(list, json.readAsList(new ByteArrayInputStream(array.getBytes(StandardCharsets.UTF_8)), Item.class));
+        assertEquals(list, json.readAsList(new StringReader(array), Item.class));
+        assertEquals(map, json.readAsMap(object, Item.class));
+        assertEquals(map, json.readAsMap(object.getBytes(StandardCharsets.UTF_8), Item.class));
+        assertEquals(map, json.readAsMap(new ByteArrayInputStream(object.getBytes(StandardCharsets.UTF_8)), Item.class));
+        assertEquals(map, json.readAsMap(new StringReader(object), Item.class));
+
+        JsonType<Map<String, BigDecimal>> element = new JsonType<>() { };
+        JsonType<List<Item>> value = new JsonType<>() { };
+        String nestedArray = "[{\"number\":12345678901234567890.123456789}]";
+        String nestedObject = "{\"group\":[{\"value\":1}]}";
+        var expectedList = List.of(Map.of("number", new BigDecimal("12345678901234567890.123456789")));
+        var expectedMap = Map.of("group", list);
+        byte[] arrayBytes = nestedArray.getBytes(StandardCharsets.UTF_8);
+        byte[] objectBytes = nestedObject.getBytes(StandardCharsets.UTF_8);
+        assertEquals(expectedList, json.readAsList(nestedArray, element));
+        assertEquals(expectedList, json.readAsList(arrayBytes, element));
+        assertEquals(expectedList, json.readAsList(new ByteArrayInputStream(arrayBytes), element));
+        assertEquals(expectedList, json.readAsList(new StringReader(nestedArray), element));
+        assertEquals(expectedMap, json.readAsMap(nestedObject, value));
+        assertEquals(expectedMap, json.readAsMap(objectBytes, value));
+        assertEquals(expectedMap, json.readAsMap(new ByteArrayInputStream(objectBytes), value));
+        assertEquals(expectedMap, json.readAsMap(new StringReader(nestedObject), value));
+        assertNull(json.readAsList("null", Item.class));
+        assertNull(json.readAsMap("null", value));
+        assertEquals(List.of(), json.readAsList("[]", element));
+        assertEquals(Map.of(), json.readAsMap("{}", Item.class));
+        assertThrows(JsonException.class, () -> json.readAsList("[] []", Item.class));
+        assertThrows(JsonException.class, () -> json.readAsMap("{} {}", value));
+    }
+
+    @Test
     void optionsArePreparedAndDoNotMutateTheBaseOrWarmCaches() {
         JsonMapper base = mapper();
         Map<String, Object> values = new LinkedHashMap<>();
