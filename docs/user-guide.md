@@ -39,11 +39,15 @@
 | 自有事件循环 | readSession/eventSession | 一个结果 |
 | 已有 ByteBuf / DataBuffer 流 | 对应传输适配器 | 输入租约、当前值与输出段 |
 
-当前快照尚未发布到 Maven Central。先从源码安装到本地或发布到内部制品库：
+当前快照不发布到 Maven Central，可从源码安装到本地：
 
 ```sh
 mvn -B -ntp install
 ```
+
+自动发布由 [Maven snapshots workflow](../.github/workflows/maven-publish.yml) 管理：推送到 `master` 后发布到 [JetLinks snapshots 仓库](https://nexus.jetlinks.cn/content/repositories/snapshots/)，也可在 Actions 页面选择 `master` 手动运行。仓库须配置 `MAVEN_USERNAME`、`MAVEN_PASSWORD` 两个 Actions Secret，对应 Maven server ID `snapshots`。
+
+发布使用 Java 17 执行 `mvn -B -ntp clean deploy`，保留测试、Checkstyle、SpotBugs 和覆盖率门禁，全部模块完成构建后再开始上传。此流程只接受 `-SNAPSHOT` 版本；正式版发布需另行配置。应用使用远端快照时，须配置上述仓库地址并启用 snapshots。
 
 构建还需要 Python 3 执行聚合覆盖率检查。应用添加 API 与一个 Provider：
 

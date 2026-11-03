@@ -7,6 +7,13 @@
     <name>JSON Facade</name>
     <description>Implementation-neutral manual JSON operations and Reactor streams</description>
     <url>https://github.com/jetlinks/json-facade</url>
+    <distributionManagement>
+        <snapshotRepository>
+            <id>snapshots</id>
+            <name>JetLinks Snapshot Repository</name>
+            <url>https://nexus.jetlinks.cn/content/repositories/snapshots/</url>
+        </snapshotRepository>
+    </distributionManagement>
     <modules>
         <module>json-facade-api</module>
         <module>json-facade-tck</module>
@@ -126,6 +133,15 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <failIfNoTests>false</failIfNoTests>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-deploy-plugin</artifactId>
+                <version>3.1.4</version>
+                <configuration>
+                    <!-- 全部模块通过验证后再上传，避免构建失败时发布部分模块。 -->
+                    <deployAtEnd>true</deployAtEnd>
                 </configuration>
             </plugin>
             <plugin>

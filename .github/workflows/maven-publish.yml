@@ -1,0 +1,42 @@
+name: Publish Maven snapshots
+on:
+  push:
+    branches: ['master']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: maven-snapshots
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          server-id: snapshots
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+      - name: Check snapshot version
+        run: |
+          version="$(mvn -B -ntp -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          case "$version" in
+            *-SNAPSHOT) ;;
+            *) echo '::error::This workflow only publishes SNAPSHOT versions'; exit 1 ;;
+          esac
+      - name: Build and deploy to JetLinks snapshots
+        env:
+          MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+        run: |
+          : "${MAVEN_USERNAME:?Repository secret MAVEN_USERNAME is required}"
+          : "${MAVEN_PASSWORD:?Repository secret MAVEN_PASSWORD is required}"
+          mvn -B -ntp clean deploy
