@@ -5,6 +5,18 @@ This document describes the current implementation and its verification boundari
 
 ## Collection API and migration
 
+`JsonMapper.readAsList(input, elementType)` and
+`readAsMap(input, valueType)` provide typed collection reads for String,
+UTF-8 byte[], InputStream and Reader. Class and JsonType overloads describe
+the list element or map value; map keys are String. Interface defaults compose
+JsonType and delegate once to the corresponding read input, preserving Provider
+configuration, complete-root validation and caller-owned I/O. Results are fully
+materialized; JSON null stays Java null and empty containers stay empty. Generic
+elements/values use JsonType; repeated hot-path reads may reuse a complete
+collection JsonType with read. Dynamic structures continue to use
+readTree(...).asArray()/asObject(). No Provider SPI or collection conversion
+pipeline is added.
+
 `JsonObject` is a `Map<String, Object>` and `JsonArray`
 a `List<Object>`. Collection reads/writes follow JDK contracts; `node(name/index)`
 retains path-aware missing/null access. Insertions retain references; independent
@@ -533,10 +545,12 @@ steps, share mappers/types, and measure actual workloads before changing transpo
 
 ## Implementation and validation
 
-Java 17.0.18 and 21.0.10 each pass 348 tests with no failures, errors or skips.
+Java 17.0.18 passes 355 tests with no failures, errors or skips, including typed
+collection reads across all input forms, nested types, adapters and caller-owned
+I/O. This change has not been rerun locally on Java 21; the CI matrix covers both.
 Compilation uses all warnings as errors; Checkstyle, SpotBugs and every production
-module's 80% branch-coverage gate pass. Aggregate branch coverage is 1553/1653
-(93.95%); compatibility covers 154/156 branches (98.72%) and fastjson2 covers 97/98
+module's 80% branch-coverage gate pass. Aggregate branch coverage is 1546/1653
+(93.53%); compatibility covers 152/156 branches (97.44%) and fastjson2 covers 97/98
 (98.98%). Tests cover all three Providers, configured
 extensions, owned/borrowed tree isolation/locations, IO failures, demand, cancellation and transport
 ownership. The [CI matrix](../.github/workflows/verify.yml) also runs small-chunk,

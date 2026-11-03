@@ -339,9 +339,22 @@ Item converted = mapper.convert(java.util.Map.of("id", "device-1", "count", 3), 
 JsonType<java.util.List<java.util.Map<String, Item>>> nested =
     new JsonType<java.util.List<java.util.Map<String, Item>>>() { };
 var result = mapper.read("[{\"first\":{\"id\":\"device-1\",\"count\":3}}]", nested);
+
+// 常见列表、按标识分组的对象：参数分别表示元素类型和值类型。
+java.util.List<Item> items = mapper.readAsList("[{\"id\":\"device-1\",\"count\":3}]", Item.class);
+java.util.Map<String, Item> byId = mapper.readAsMap(
+    "{\"device-1\":{\"id\":\"device-1\",\"count\":3}}", Item.class);
+java.util.Map<String, java.util.List<Item>> groups = mapper.readAsMap(
+    "{\"first\":[{\"id\":\"device-1\",\"count\":3}]}",
+    new JsonType<java.util.List<Item>>() { });
 ```
 
 普通类型直接传 Class：String/byte[]/InputStream/Reader 读取、convert、游标 readValue、readSession 和各传输适配器的 typed 读取都有对应重载。它们一次委托到 JsonType；嵌套泛型继续用匿名捕获、listOf/mapOf 或已有 JDK Type。不要依赖未绑定的类型变量恢复运行时 T。
+
+`readAsList` 和 `readAsMap` 也提供上述四种输入形式及 Class/JsonType 重载，后者固定字符串键。
+它们直接组合目标类型并交给当前 Provider 读取，完整构造 List/Map；JSON null 返回 null，空容器保持为空。
+泛型参数描述单个元素或值，不是外层容器；高频调用可以提前组合完整 JsonType 并复用 `read`。
+动态结构用 `readTree(...).asArray()` / `asObject()`；超大数组逐条读取用 `iterateArray`。
 
 同步 read 要求完整单根，拒绝尾部非空白；空输入不等于 JSON null。字节 API 使用 UTF-8，字符 IO 保留字符语义；调用方管理传入 IO，底层同步 IO 仍可能阻塞。
 
