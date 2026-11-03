@@ -49,6 +49,8 @@ mvn -B -ntp install
 
 发布使用 Java 17 执行 `mvn -B -ntp clean deploy`，保留测试、Checkstyle、SpotBugs 和覆盖率门禁，全部模块完成构建后再开始上传。此流程只接受 `-SNAPSHOT` 版本；正式版发布需另行配置。应用使用远端快照时，须配置上述仓库地址并启用 snapshots。
 
+父 POM 统一在 package 阶段生成并附加各 Java 模块的 `-sources.jar`，deploy 随同主 JAR 和 POM 上传，IDE 可下载同一快照版本的源码。POM 聚合模块不生成源码 JAR。
+
 构建还需要 Python 3 执行聚合覆盖率检查。应用添加 API 与一个 Provider：
 
 ```xml
